@@ -101,9 +101,8 @@ def main():
         logger.error("No screenshots captured. Exiting.")
         sys.exit(0)
 
-    logger.info("\nCopying merged image to clipboard...")
+    logger.info("Copying merged image to clipboard...")
     ClipboardManager.copy_image_to_clipboard(merged_image)
-    logger.info("Merged image copied to clipboard successfully.")
 
 if __name__ == "__main__":
     main()

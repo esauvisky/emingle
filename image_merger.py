@@ -4,7 +4,7 @@ from PIL import Image
 
 class ImageMerger:
     @staticmethod
-    def detect_overlap(base_array, new_array, threshold=1):
+    def detect_overlap(base_array, new_array, threshold=0.995):
         """
         Detect if the new image overlaps at the top or bottom of the base image.
 
@@ -21,9 +21,7 @@ class ImageMerger:
             if base_array.shape[1] != new_array.shape[1]:
                 raise ValueError("Images must have the same width")
 
-            base_height = base_array.shape[0]
             new_height = new_array.shape[0]
-
             best_overlap = {'position': None, 'size': 0, 'mean': 0}
 
             # Check for overlap at the top, starting with the new image
@@ -37,7 +35,7 @@ class ImageMerger:
 
             # Check for overlap at the bottom, starting with the new image
             # placed at the bottom of the base image and moving downwards
-            for i in range(10, new_height):
+            for i in range(new_height, 10, -1):
                 mean = np.mean(base_array[-i:] == new_array[:i])
                 if mean == 1:
                     return 'bottom', i
@@ -45,8 +43,12 @@ class ImageMerger:
                     best_overlap = {'position': 'bottom', 'size': i, 'mean': mean}
 
             if best_overlap['position']:
+                if best_overlap['size'] == new_height:
+                    logger.info("Fully overlapping image. Skipping.")
+                    return None, 0
                 return best_overlap['position'], best_overlap['size']
-            return None, None
+
+            return None, 0
         except Exception as e:
             logger.error(f"Error in detect_overlap: {str(e)}")
             raise
@@ -82,7 +84,7 @@ class ImageMerger:
 
             if overlap_position == 'top':
                 logger.info(f"Overlap detected at the top, {overlap_size} rows at {overlap_position}")
-                merged_array = np.vstack((new_array[:-overlap_size], base_array)) # type: ignore
+                merged_array = np.vstack((new_array[:-overlap_size], base_array))
                 return Image.fromarray(merged_array)
             elif overlap_position == 'bottom':
                 logger.info(f"Overlap detected at the bottom, {overlap_size} rows at {overlap_position}")
