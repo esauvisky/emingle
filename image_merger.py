@@ -4,7 +4,7 @@ from PIL import Image
 
 class ImageMerger:
     @staticmethod
-    def detect_overlap(base_array, new_array, threshold=0.99):
+    def detect_overlap(base_array, new_array, threshold=1):
         """
         Detect if the new image overlaps at the top or bottom of the base image.
 
@@ -21,16 +21,31 @@ class ImageMerger:
             if base_array.shape[1] != new_array.shape[1]:
                 raise ValueError("Images must have the same width")
 
-            # Check for overlap at the top
-            for i in range(1, min(base_array.shape[0], new_array.shape[0]) + 1):
-                if np.mean(base_array[:i] == new_array[-i:]) >= threshold:
+            base_height = base_array.shape[0]
+            new_height = new_array.shape[0]
+
+            best_overlap = {'position': None, 'size': 0, 'mean': 0}
+
+            # Check for overlap at the top, starting with the new image
+            # placed at the top of the base image and moving upwards
+            for i in range(new_height, 10, -1):
+                mean = np.mean(base_array[:i] == new_array[-i:])
+                if mean == 1:
                     return 'top', i
+                if mean > threshold and mean > best_overlap['mean']:
+                    best_overlap = {'position': 'top', 'size': i, 'mean': mean}
 
-            # Check for overlap at the bottom
-            for i in range(1, min(base_array.shape[0], new_array.shape[0]) + 1):
-                if np.mean(base_array[-i:] == new_array[:i]) >= threshold:
+            # Check for overlap at the bottom, starting with the new image
+            # placed at the bottom of the base image and moving downwards
+            for i in range(10, new_height):
+                mean = np.mean(base_array[-i:] == new_array[:i])
+                if mean == 1:
                     return 'bottom', i
+                if mean > threshold and mean > best_overlap['mean']:
+                    best_overlap = {'position': 'bottom', 'size': i, 'mean': mean}
 
+            if best_overlap['position']:
+                return best_overlap['position'], best_overlap['size']
             return None, None
         except Exception as e:
             logger.error(f"Error in detect_overlap: {str(e)}")
