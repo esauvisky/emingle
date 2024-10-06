@@ -95,7 +95,15 @@ def main():
             # Display images in debug mode
             if debug_mode:
                 merged_image.show()
-        time.sleep(0.01)  # Prevent busy waiting
+        time.sleep(0.1)  # Prevent busy waiting
+
+    # Wait for all threads to complete before proceeding
+    # FIXME: broken, if esc is pressed before the images are merged
+    # only the images merged so far are returned (the rest is lost)
+    keyboard_listener.listener_thread.join()
+    logger.info("Keyboard listener thread joined.")
+    # mouse_listener.listener_thread.join()
+    # logger.info("Mouse listener thread joined.")
 
     if merged_image is None:
         logger.error("No screenshots captured. Exiting.")

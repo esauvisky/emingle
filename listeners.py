@@ -11,6 +11,7 @@ class KeyboardListener:
     def start(self):
         listener_thread = Thread(target=self._listen_keyboard, daemon=True)
         listener_thread.start()
+        self.listener_thread = listener_thread
 
     def _listen_keyboard(self):
         with keyboard.Listener(on_press=self._on_press) as listener:  # type: ignore
@@ -35,6 +36,7 @@ class MouseScrollListener:
     def start(self):
         listener_thread = Thread(target=self._listen_mouse, daemon=True)
         listener_thread.start()
+        self.listener_thread = listener_thread
 
     def _listen_mouse(self):
         with mouse.Listener(on_scroll=self._on_scroll) as listener:
