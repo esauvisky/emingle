@@ -89,33 +89,64 @@ class ImageMerger:
             base_img = Image.open(base_img_path)
             new_img = Image.open(new_img_path)
 
-            result = ImageMerger.merge_images_vertically(base_img, new_img, threshold)
-            return result
-        except Exception as e:
-            logger.error(f"Failed to merge images: {str(e)}")
-            return None
-
-    @staticmethod
-    def process_images(base_img_paths, new_img_paths, threshold=0.995, num_processes=4):
-        logger.info("Entering process_images")
-        start_time = time.time()
-        with Pool(num_processes) as pool:
-            results = pool.map(ImageMerger.process_single_image, [(base_path, new_path, threshold)
-                                                                    for base_path, new_path in zip(base_img_paths, new_img_paths)]) # yapf: disable
-
-        successful_merges = [result for result in results if result is not None]
-
-        end_time = time.time()
-        logger.info(f"Images merged successfully. Time taken: {end_time - start_time:.4f} seconds")
-
-        return successful_merges
-
-    find_image_overlap = find_image_overlap
 
 
 if __name__ == "__main__":
-    base_paths = ["test/2_base.png", "test/1_base.png", "test/3_base.png", "test/3_base.png", "test/3_base.png"]
-    new_paths = ["test/2_new.png", "test/1_new.png", "test/3_new_1.png", "test/3_new_2.png", "test/3_new_3.png"]
-    results = ImageMerger.process_images(base_paths, new_paths, threshold=0)
-    # for result in results:
-    #     result.show()
+    start_time = time.time()
+    logger.info("Image processing started.")
+
+    base_dir = "test"  # Directory containing the images
+
+    # Define patterns to match base and new images
+    base_pattern = os.path.join(base_dir, "*_base.png")
+    new_pattern = os.path.join(base_dir, "*_new*.png")  # Handles new images with suffixes like _new_1.png
+
+    # Retrieve lists of base and new images
+    base_images = glob.glob(base_pattern)
+    new_images = glob.glob(new_pattern)
+
+    logger.info(f"Found {len(base_images)} base images and {len(new_images)} new images.")
+
+    # Create a dictionary to map identifiers to base images
+    base_dict = {}
+    for base in base_images:
+        filename = os.path.basename(base)
+        identifier = filename.split('_base.png')[0]  # Extract identifier before '_base.png'
+        base_dict.setdefault(identifier, []).append(base)
+
+    # Create a dictionary to map identifiers to new images
+    new_dict = {}
+    for new in new_images:
+        filename = os.path.basename(new)
+        # Handle new images with possible suffixes like _new_1.png
+        identifier = filename.split('_new')[0]
+        new_dict.setdefault(identifier, []).append(new)
+
+    total_pairs = 0
+    processed_pairs = 0
+
+    # Iterate through each identifier and process corresponding image pairs
+    for identifier, base_list in base_dict.items():
+        corresponding_new_images = new_dict.get(identifier, [])
+        if not corresponding_new_images:
+            logger.warning(f"No new images found for base identifier '{identifier}'. Skipping.")
+            continue
+
+        for base_path in base_list:
+            for new_path in corresponding_new_images:
+                total_pairs += 1
+                logger.info(f"Processing pair: Base='{base_path}' | New='{new_path}'")
+                pair_start_time = time.time()
+
+                # Process the image pair with a threshold of 0.9
+                result = ImageMerger.process_single_image((base_path, new_path, 0.9))
+
+                pair_end_time = time.time()
+                elapsed = pair_end_time - pair_start_time
+                logger.info(f"Processed pair in {elapsed:.2f} seconds.")
+                processed_pairs += 1
+
+    end_time = time.time()
+    total_elapsed = end_time - start_time
+    logger.info(f"Image processing completed. Processed {processed_pairs}/{total_pairs} pairs.")
+    logger.info(f"Total execution time: {total_elapsed:.2f} seconds.")
