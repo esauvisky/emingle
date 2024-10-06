@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 from loguru import logger
 
+
 class ImageMerger:
     @staticmethod
     def find_image_overlap(base_array, new_array, threshold=0.995):
@@ -28,7 +29,7 @@ class ImageMerger:
             start_base = max(0, shift)
             end_base = min(height_base, shift + height_new)
             start_new = max(0, -shift)
-            end_new = start_new + (end_base - start_base)
+            end_new = start_new + (end_base-start_base)
 
             if end_base - start_base > 0:
                 base_overlap = base_array[start_base:end_base]
@@ -93,9 +94,6 @@ class ImageMerger:
                     non_overlap_new = new_array[overlap_size:]
                     merged_array = np.vstack((base_array, non_overlap_new)) if non_overlap_new.size > 0 else base_array
 
-                if debug:
-                    Image.fromarray(merged_array).save("debug_merged_image.png")
-
                 return Image.fromarray(merged_array)
             else:
                 logger.info("No overlap detected above the threshold, returning original base image")
@@ -125,9 +123,8 @@ class ImageMerger:
 
         try:
             with Pool(num_processes) as pool:
-                results = pool.map(ImageMerger.process_single_image,
-                                   [(base_path, new_path, threshold, debug)
-                                    for base_path, new_path in zip(base_img_paths, new_img_paths)])
+                results = pool.map(ImageMerger.process_single_image, [(base_path, new_path, threshold, debug)
+                                                                      for base_path, new_path in zip(base_img_paths, new_img_paths)]) # yapf: disable
 
             successful_merges = [result for result in results if result is not None]
 
@@ -145,6 +142,7 @@ class ImageMerger:
             raise
 
     find_image_overlap = find_image_overlap
+
 
 if __name__ == "__main__":
     base_paths = ["test/2_base.png", "test/1_base.png", "test/3_base.png", "test/3_base.png", "test/3_base.png"]
