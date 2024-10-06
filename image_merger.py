@@ -51,95 +51,64 @@ class ImageMerger:
         return best_shift, best_match_percentage
 
     @staticmethod
-    def detect_overlap(base_array, new_array, threshold=0.995):
-        logger.debug("Entering detect_overlap")
-        try:
-            if base_array.shape[1] != new_array.shape[1]:
-                raise ValueError("Images must have the same width")
-
-            shift, match_percentage = ImageMerger.find_image_overlap(base_array, new_array, threshold)
-
-            logger.debug(f"Overlap detected: shift={shift}, match_percentage={match_percentage:.4f}")
-            return shift, match_percentage
-
-        except Exception as e:
-            logger.error(f"Error in detect_overlap: {str(e)}")
-            raise
-
-    @staticmethod
-    def merge_images_vertically(base_img, new_img, threshold=0.995, debug=False):
+    def merge_images_vertically(base_img, new_img, threshold=0.995):
         logger.debug("Entering merge_images_vertically")
-        try:
-            base_array = np.array(base_img)
-            new_array = np.array(new_img)
+        base_array = np.array(base_img)
+        new_array = np.array(new_img)
 
-            if base_img.mode != new_img.mode:
-                raise ValueError(f"Image modes don't match: {base_img.mode} vs {new_img.mode}")
+        if base_img.mode != new_img.mode:
+            raise ValueError(f"Image modes don't match: {base_img.mode} vs {new_img.mode}")
 
-            if base_array.shape[1] != new_array.shape[1]:
-                raise ValueError("Images must have the same width")
+        if base_array.shape[1] != new_array.shape[1]:
+            raise ValueError("Images must have the same width")
 
-            shift, match_percentage = ImageMerger.detect_overlap(base_array, new_array, threshold)
+        shift, match_percentage = ImageMerger.find_image_overlap(base_array, new_array, threshold)
 
-            if shift is not None:
-                logger.info(f"Overlap detected at shift {shift} with match percentage {match_percentage:.2%}")
+        if shift is not None:
+            logger.info(f"Overlap detected at shift {shift} with match percentage {match_percentage:.2%}")
 
-                height_base, width, _ = base_array.shape
-                height_new = new_array.shape[0]
+            height_base, width, _ = base_array.shape
+            height_new = new_array.shape[0]
 
-                if shift < 0:
-                    merged_array = np.vstack((new_array[0:-shift], base_array))
-                else:
-                    overlap_size = min(height_new, height_base - shift)
-                    non_overlap_new = new_array[overlap_size:]
-                    merged_array = np.vstack((base_array, non_overlap_new)) if non_overlap_new.size > 0 else base_array
-
-                return Image.fromarray(merged_array)
+            if shift < 0:
+                merged_array = np.vstack((new_array[0:-shift], base_array))
             else:
-                logger.info("No overlap detected above the threshold, returning original base image")
-                return base_img
+                overlap_size = min(height_new, height_base - shift)
+                non_overlap_new = new_array[overlap_size:]
+                merged_array = np.vstack((base_array, non_overlap_new)) if non_overlap_new.size > 0 else base_array
 
-        except Exception as e:
-            logger.error(f"Error in merge_images_vertically: {str(e)}")
-            raise
+            return Image.fromarray(merged_array)
+        else:
+            logger.info("No overlap detected above the threshold, returning original base image")
+            return base_img
 
     @staticmethod
     def process_single_image(args):
-        base_img_path, new_img_path, threshold, debug = args
+        base_img_path, new_img_path, threshold = args
         try:
             base_img = Image.open(base_img_path)
             new_img = Image.open(new_img_path)
 
-            result = ImageMerger.merge_images_vertically(base_img, new_img, threshold, debug)
+            result = ImageMerger.merge_images_vertically(base_img, new_img, threshold)
             return result
         except Exception as e:
             logger.error(f"Failed to merge images: {str(e)}")
             return None
 
     @staticmethod
-    def process_images(base_img_paths, new_img_paths, threshold=0.995, debug=False, num_processes=1):
+    def process_images(base_img_paths, new_img_paths, threshold=0.995, num_processes=4):
         logger.info("Entering process_images")
         start_time = time.time()
+        with Pool(num_processes) as pool:
+            results = pool.map(ImageMerger.process_single_image, [(base_path, new_path, threshold)
+                                                                    for base_path, new_path in zip(base_img_paths, new_img_paths)]) # yapf: disable
 
-        try:
-            with Pool(num_processes) as pool:
-                results = pool.map(ImageMerger.process_single_image, [(base_path, new_path, threshold, debug)
-                                                                      for base_path, new_path in zip(base_img_paths, new_img_paths)]) # yapf: disable
+        successful_merges = [result for result in results if result is not None]
 
-            successful_merges = [result for result in results if result is not None]
+        end_time = time.time()
+        logger.info(f"Images merged successfully. Time taken: {end_time - start_time:.4f} seconds")
 
-            end_time = time.time()
-            logger.info(f"Images merged successfully. Time taken: {end_time - start_time:.4f} seconds")
-
-            if debug:
-                for i, result in enumerate(successful_merges):
-                    result.save(f"debug_result_{i}.png")
-
-            return successful_merges
-
-        except Exception as e:
-            logger.error(f"Failed to process images: {str(e)}")
-            raise
+        return successful_merges
 
     find_image_overlap = find_image_overlap
 
@@ -147,6 +116,6 @@ class ImageMerger:
 if __name__ == "__main__":
     base_paths = ["test/2_base.png", "test/1_base.png", "test/3_base.png", "test/3_base.png", "test/3_base.png"]
     new_paths = ["test/2_new.png", "test/1_new.png", "test/3_new_1.png", "test/3_new_2.png", "test/3_new_3.png"]
-    results = ImageMerger.process_images(base_paths, new_paths, threshold=0, debug=True)
+    results = ImageMerger.process_images(base_paths, new_paths, threshold=0)
     # for result in results:
     #     result.show()
