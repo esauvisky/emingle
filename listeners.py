@@ -31,7 +31,7 @@ class MouseScrollListener:
         self.screenshot_event = False
         self.exit_event = False
         self.scroll_count = 0
-        self.scroll_threshold = 2  # Number of scrolls before triggering screenshot
+        self.scroll_threshold = 5  # Number of scrolls before triggering screenshot
 
     def start(self):
         listener_thread = Thread(target=self._listen_mouse, daemon=True)

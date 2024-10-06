@@ -9,7 +9,7 @@ from loguru import logger
 
 class ImageMerger:
     @staticmethod
-    def find_image_overlap(base_array, new_array, threshold=0.9):
+    def find_image_overlap(base_array, new_array, threshold=0.5):
         logger.debug(f"Entering find_image_overlap with threshold {threshold}")
 
         height_base, width = base_array.shape
@@ -43,7 +43,7 @@ class ImageMerger:
         return best_shift, best_match_percentage
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img, threshold=0.9):
+    def merge_images_vertically(base_img, new_img, threshold=0.5):
         logger.debug("Entering merge_images_vertically")
 
         # Convert images to grayscale to reduce data size
@@ -135,8 +135,8 @@ if __name__ == "__main__":
                 logger.info(f"Processing pair: Base='{base_path}' | New='{new_path}'")
                 pair_start_time = time.time()
 
-                # Process the image pair with a threshold of 0.9
-                result = ImageMerger.process_single_image((base_path, new_path, 0.9))
+                # Process the image pair with a threshold of 0.5
+                result = ImageMerger.process_single_image((base_path, new_path, 0.5))
 
                 pair_end_time = time.time()
                 elapsed = pair_end_time - pair_start_time
