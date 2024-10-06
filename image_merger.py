@@ -8,7 +8,9 @@ from loguru import logger
 
 class ImageMerger:
     @staticmethod
-    def find_image_overlap_cached(base_array_tuple, new_array_tuple, threshold=0.995):
+    def find_image_overlap(base_array, new_array, threshold=0.995):
+        base_array_tuple = tuple(map(tuple, base_array))
+        new_array_tuple = tuple(map(tuple, new_array))
         base_array = np.array(base_array_tuple)
         new_array = np.array(new_array_tuple)
 
@@ -43,10 +45,6 @@ class ImageMerger:
         end_time = time.time()
         logger.debug(f"Exiting find_image_overlap. Time taken: {end_time - start_time:.4f} seconds")
         return best_shift, best_match_percentage
-
-    @staticmethod
-    def find_image_overlap(base_array, new_array, threshold=0.995):
-        return ImageMerger.find_image_overlap_cached(tuple(map(tuple, base_array)), tuple(map(tuple, new_array)), threshold)
 
     @staticmethod
     def detect_overlap(base_array, new_array, threshold=0.995):
@@ -118,7 +116,7 @@ class ImageMerger:
             return None
 
     @staticmethod
-    def process_images(base_img_paths, new_img_paths, threshold=0.995, debug=False, num_processes=4):
+    def process_images(base_img_paths, new_img_paths, threshold=0.995, debug=False, num_processes=1):
         logger.info("Entering process_images")
         start_time = time.time()
 
@@ -149,5 +147,5 @@ if __name__ == "__main__":
     base_paths = ["test/2_base.png", "test/1_base.png", "test/3_base.png", "test/3_base.png", "test/3_base.png"]
     new_paths = ["test/2_new.png", "test/1_new.png", "test/3_new_1.png", "test/3_new_2.png", "test/3_new_3.png"]
     results = ImageMerger.process_images(base_paths, new_paths, threshold=0, debug=True)
-    for result in results:
-        result.show()
+    # for result in results:
+    #     result.show()
