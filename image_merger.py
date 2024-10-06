@@ -34,9 +34,12 @@ class ImageMerger:
                 base_overlap = base_array[start_base:end_base]
                 new_overlap = new_array[start_new:end_new]
 
-                matching_pixels = np.sum(np.all(base_overlap == new_overlap, axis=(1, 2)))
-                total_pixels = base_overlap.shape[0] * base_overlap.shape[1]
-                match_percentages[i] = matching_pixels / total_pixels
+                # Calculates which rows from the new image match the
+                # rows from the base image within the overlapping part
+                # Use axis=(2) to compare pixel by pixel instead row by row
+                matching_rows = np.all(base_overlap == new_overlap, axis=(1, 2))
+
+                match_percentages[i] = np.mean(matching_rows)
 
         best_match_index = np.argmax(match_percentages)
         best_match_percentage = match_percentages[best_match_index]
