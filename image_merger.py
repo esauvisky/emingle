@@ -4,67 +4,97 @@ from PIL import Image
 
 class ImageMerger:
     @staticmethod
-    def detect_overlap(base_array, new_array, threshold=0.995):
+    def find_image_overlap(base_array, new_array, threshold=0.995):
         """
-        Detect if the new image overlaps at the top or bottom of the base image.
+        Find the vertical shift where new_array overlaps base_array with the highest percentage of matching pixels above a threshold.
 
         Args:
-        base_array (np.array): The base image array
-        new_array (np.array): The new image array to be merged
-        threshold (float): The similarity threshold for considering a match (0-1)
+            base_array (np.array): Base image array (height_base, width, channels)
+            new_array (np.array): New image array (height_new, width, channels)
+            threshold (float): Minimum percentage of matching pixels required (between 0 and 1)
 
         Returns:
-        tuple: (overlap_position, overlap_size) where overlap_position is 'top', 'bottom', or None,
-               and overlap_size is the number of overlapping rows or None if no overlap
+            tuple: (best_shift, best_match_percentage) where best_shift is the vertical shift with the highest match percentage above threshold,
+                   or (None, 0) if no such shift is found.
+        """
+        height_base = base_array.shape[0]
+        height_new = new_array.shape[0]
+        best_shift = None
+        best_match_percentage = 0
+
+        # Shifts range from -(height_new - 1) to height_base - 1
+        for shift in range(-height_new + 1, height_base):
+            # Calculate overlapping indices in base and new arrays
+            start_base = max(0, shift)
+            end_base = min(height_base, shift + height_new)
+
+            start_new = max(0, -shift)
+            end_new = start_new + (end_base - start_base)
+
+            if end_base - start_base > 0:
+                # There is overlap
+                base_overlap = base_array[start_base:end_base]
+                new_overlap = new_array[start_new:end_new]
+
+                # Calculate the percentage of matching pixels
+                if base_array.ndim == 2:
+                    # Grayscale image
+                    matching_pixels = np.sum(base_overlap == new_overlap)
+                    total_pixels = base_overlap.size
+                elif base_array.ndim == 3:
+                    # Color image
+                    matching_pixels = np.sum(np.all(base_overlap == new_overlap, axis=2))
+                    total_pixels = base_overlap.shape[0] * base_overlap.shape[1]
+                else:
+                    raise ValueError("Unsupported image array dimensions.")
+
+                match_percentage = matching_pixels / total_pixels
+
+                if match_percentage > best_match_percentage and match_percentage >= threshold:
+                    best_match_percentage = match_percentage
+                    best_shift = shift
+
+        return best_shift, best_match_percentage
+
+    @staticmethod
+    def detect_overlap(base_array, new_array, threshold=0.995):
+        """
+        Detect if the new image overlaps the base image with matching overlapping rows above a threshold.
+
+        Args:
+            base_array (np.array): The base image array
+            new_array (np.array): The new image array to be merged
+            threshold (float): Minimum percentage of matching pixels required (between 0 and 1)
+
+        Returns:
+            tuple: (best_shift, best_match_percentage) where best_shift is the vertical shift with the highest match percentage above threshold,
+                   or (None, 0) if no such shift is found.
         """
         try:
             if base_array.shape[1] != new_array.shape[1]:
                 raise ValueError("Images must have the same width")
 
-            new_height = new_array.shape[0]
-            best_overlap = {'position': None, 'size': 0, 'mean': 0}
+            shift, match_percentage = ImageMerger.find_image_overlap(base_array, new_array, threshold)
 
-            # Check for overlap at the top, starting with the new image
-            # placed at the top of the base image and moving upwards
-            for i in range(new_height, 10, -1):
-                mean = np.mean(base_array[:i] == new_array[-i:])
-                if mean == 1:
-                    return 'top', i
-                if mean > threshold and mean > best_overlap['mean']:
-                    best_overlap = {'position': 'top', 'size': i, 'mean': mean}
+            return shift, match_percentage
 
-            # Check for overlap at the bottom, starting with the new image
-            # placed at the bottom of the base image and moving downwards
-            for i in range(new_height, 10, -1):
-                mean = np.mean(base_array[-i:] == new_array[:i])
-                if mean == 1:
-                    return 'bottom', i
-                if mean > threshold and mean > best_overlap['mean']:
-                    best_overlap = {'position': 'bottom', 'size': i, 'mean': mean}
-
-            if best_overlap['position']:
-                if best_overlap['size'] == new_height:
-                    logger.info("Fully overlapping image. Skipping.")
-                    return None, 0
-                return best_overlap['position'], best_overlap['size']
-
-            return None, 0
         except Exception as e:
             logger.error(f"Error in detect_overlap: {str(e)}")
             raise
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img):
+    def merge_images_vertically(base_img, new_img, threshold=0.995):
         """
-        Merge two images vertically if they overlap at the top or bottom, extending the base image.
+        Merge two images vertically if they overlap, extending the base image.
         If no overlap, return the original base image.
 
         Args:
-        base_img (PIL.Image): The base image
-        new_img (PIL.Image): The new image to be merged
+            base_img (PIL.Image): The base image
+            new_img (PIL.Image): The new image to be merged
+            threshold (float): Minimum percentage of matching pixels required (between 0 and 1)
 
         Returns:
-        PIL.Image: The merged image or the original base image if no overlap
+            PIL.Image: The merged image or the original base image if no overlap
         """
         try:
             # Convert images to numpy arrays
@@ -80,18 +110,31 @@ class ImageMerger:
                 raise ValueError("Images must have the same width")
 
             # Detect overlap
-            overlap_position, overlap_size = ImageMerger.detect_overlap(base_array, new_array)
+            shift, match_percentage = ImageMerger.detect_overlap(base_array, new_array, threshold)
 
-            if overlap_position == 'top':
-                logger.info(f"Overlap detected at the top, {overlap_size} rows at {overlap_position}")
-                merged_array = np.vstack((new_array[:-overlap_size], base_array))
-                return Image.fromarray(merged_array)
-            elif overlap_position == 'bottom':
-                logger.info(f"Overlap detected at the bottom, {overlap_size} rows at {overlap_position}")
-                merged_array = np.vstack((base_array, new_array[overlap_size:]))
+            if shift is not None:
+                logger.info(f"Overlap detected at shift {shift} with match percentage {match_percentage:.2%}")
+
+                height_base = base_array.shape[0]
+                height_new = new_array.shape[0]
+
+                if shift < 0:
+                    # New image overlaps the base image starting above it
+                    # Non-overlapping part of new_array is from 0 to -shift
+                    non_overlap_new = new_array[0 : -shift]
+                    merged_array = np.vstack((non_overlap_new, base_array))
+                else:
+                    # New image overlaps the base image starting at row 'shift'
+                    overlap_size = min(height_new, height_base - shift)
+                    non_overlap_new = new_array[overlap_size:]
+
+                    if non_overlap_new.size > 0:
+                        merged_array = np.vstack((base_array, non_overlap_new))
+                    else:
+                        merged_array = base_array
                 return Image.fromarray(merged_array)
             else:
-                logger.info("No overlap detected, returning original base image")
+                logger.info("No overlap detected above the threshold, returning original base image")
                 return base_img
 
         except Exception as e:
@@ -99,17 +142,21 @@ class ImageMerger:
             raise
 
     @staticmethod
-    def process_images(base_img_path, new_img_path):
+    def process_images(base_img_path, new_img_path, threshold=0.995):
         try:
             base_img = Image.open(base_img_path)
             new_img = Image.open(new_img_path)
 
-            result = ImageMerger.merge_images_vertically(base_img, new_img)
+            result = ImageMerger.merge_images_vertically(base_img, new_img, threshold)
             result.show()
             logger.info("Images merged successfully")
         except Exception as e:
             logger.error(f"Failed to merge images: {str(e)}")
 
+    # Include the find_image_overlap method in the class
+    find_image_overlap = find_image_overlap
+
 # Usage example
 if __name__ == "__main__":
-    ImageMerger.process_images("test/2_base.png", "test/2_new.png")
+    # Adjust the threshold as needed (e.g., 99.5% matching pixels)
+    ImageMerger.process_images("test/2_base.png", "test/2_new.png", threshold=0.95)
