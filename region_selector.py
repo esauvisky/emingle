@@ -3,6 +3,7 @@
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import utils
@@ -74,22 +75,16 @@ class RegionSelector:
     @staticmethod
     def _select_region_linux():
         try:
-            # Run xrectsel and capture the output
-            # xrectsel returns geometry in format: x,y,width,height
-            result = subprocess.run(['xrectsel'], capture_output=True, text=True, check=True)
+            result = subprocess.run(shlex.split('import -format "%wx%h%X%Y\n" info:'), capture_output=True, text=True, check=True)
             geometry = result.stdout.strip()
             if not geometry:
-                raise ValueError("No geometry received from xrectsel.")
+                raise ValueError("No geometry received from import.")
             w, h, l, t = tuple(map(int, re.findall(r'\d+', geometry)))
             selection = {'left': l, 'top': t, 'width': w, 'height': h}
             return selection
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error selecting region with xrectsel: {e}")
-            sys.exit(1)
         except FileNotFoundError:
-            logger.error("xrectsel is not installed. Please install it using your package manager (e.g., sudo apt-get install xrectsel).")
+            logger.error("`import` is not available. Please install imagemagick using your package manager (e.g., sudo apt-get install imagemagick).")
             sys.exit(1)
         except Exception as e:
             logger.exception(f"Unexpected error during region selection: {e}")
-
             sys.exit(1)
