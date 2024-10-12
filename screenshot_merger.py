@@ -16,6 +16,8 @@ import sys
 import time
 import queue
 import threading
+import os
+import tempfile
 
 merged_image = None
 
@@ -25,21 +27,6 @@ def capture_screenshot(monitor):
         sct_img = sct.grab(monitor)
         img = Image.frombytes('RGB', sct_img.size, sct_img.rgb)
         return img
-
-
-def merge_images_thread(screenshot_queue, exit_event):
-    global merged_image
-    while not exit_event.is_set() or not screenshot_queue.empty():
-        try:
-            img = screenshot_queue.get(timeout=1)
-            new_merged = ImageMerger.merge_images_vertically(merged_image, img)
-            if new_merged is not None:
-                logger.info("Successfully merged with existing image.")
-                merged_image = new_merged
-
-            screenshot_queue.task_done()
-        except queue.Empty:
-            continue
 
 
 def main():
