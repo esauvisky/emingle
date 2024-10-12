@@ -56,28 +56,34 @@ def main():
                 " - Scroll the underlying content to capture new screenshots.\n"
                 " - Press Escape to finish capturing, merge images and send to your clipboard.\n")
 
-    merged_image = capture_screenshot(selection)
-    screenshot_queue = queue.Queue()
-    exit_event = threading.Event()
-
-    merge_thread = threading.Thread(target=merge_images_thread, args=(screenshot_queue, exit_event))
-    merge_thread.start()
-
+    screenshots = []
     while not keyboard_listener.exit_event:
         if mouse_listener.screenshot_event:
             mouse_listener.screenshot_event = False
             img = capture_screenshot(selection)
             logger.info("Captured image.")
-            screenshot_queue.put(img)
+            screenshots.append(img)
         time.sleep(0.1) # Prevent busy waiting
 
-    exit_event.set()
-    logger.info("Waiting for all screenshots to be merged...")
-    screenshot_queue.join()
-    merge_thread.join()
+    logger.info("Merging screenshots...")
+    merged_image = screenshots[0] if screenshots else None
+    for i in range(1, len(screenshots)):
+        merged_image = ImageMerger.merge_images_vertically(merged_image, screenshots[i])
+        if merged_image is None:
+            logger.warning(f"Failed to merge screenshot {i+1}. Skipping.")
 
-    logger.info("Copying merged image to clipboard...")
-    ClipboardManager.copy_image_to_clipboard(merged_image)
+    if merged_image is not None:
+        if debug_mode:
+            temp_dir = tempfile.mkdtemp()
+            logger.info(f"Saving debug images to: {temp_dir}")
+            for i, screenshot in enumerate(screenshots):
+                screenshot.save(os.path.join(temp_dir, f"screenshot_{i}.png"))
+            merged_image.save(os.path.join(temp_dir, "merged_screenshot.png"))
+
+        logger.info("Copying merged image to clipboard...")
+        ClipboardManager.copy_image_to_clipboard(merged_image)
+    else:
+        logger.error("No screenshots were taken, nothing to copy to clipboard.")
 
 
 if __name__ == "__main__":
