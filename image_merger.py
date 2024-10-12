@@ -10,7 +10,7 @@ from loguru import logger
 class ImageMerger:
     @staticmethod
     def find_image_overlap(base_array, new_array, threshold=0.5):
-        logger.debug(f"Entering find_image_overlap with threshold {threshold}")
+        logger.debug(f"Entering find_image_overlap with threshold {threshold}.�")
 
         height_base, width = base_array.shape
         height_new = new_array.shape[0]
@@ -28,6 +28,7 @@ class ImageMerger:
             if end_base - start_base > 0:
                 base_overlap = base_array[start_base:end_base]
                 new_overlap = new_array[start_new:end_new]
+
 
                 # Calculate matching percentage
                 match_percentages[i] = np.mean(base_overlap == new_overlap)
