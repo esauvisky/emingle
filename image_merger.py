@@ -9,13 +9,14 @@ from loguru import logger
 
 class ImageMerger:
     @staticmethod
-    def find_image_overlap(base_array, new_array, threshold=0.5):
-        logger.debug(f"Entering find_image_overlap with threshold {threshold}.�")
-
+    def find_image_overlap(base_array, new_array, threshold=0.8):
         height_base, width = base_array.shape
         height_new = new_array.shape[0]
 
         shifts = np.arange(-height_new + 1, height_base)
+        # Retain only the first 'height_new' * 2 and last 'height_new' * 2 shifts
+        # as anything beyond that is a redundant overlap
+        shifts = np.concatenate([shifts[:height_new * 2], shifts[-height_new * 2:]])
         match_percentages = np.zeros(shifts.shape[0], dtype=np.float32)
 
         for i in range(shifts.shape[0]):
@@ -44,9 +45,7 @@ class ImageMerger:
         return best_shift, best_match_percentage
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img, threshold=0.5):
-        logger.debug("Entering merge_images_vertically")
-
+    def merge_images_vertically(base_img, new_img, threshold=0.8):
         # Convert images to grayscale to reduce data size
         base_img_gray = base_img.convert('L')
         new_img_gray = new_img.convert('L')
@@ -62,15 +61,19 @@ class ImageMerger:
         shift, match_percentage = ImageMerger.find_image_overlap(base_array_gray, new_array_gray, threshold)
 
         if shift is not None:
-            logger.success(f"Overlap detected at shift {shift} with match percentage {match_percentage:.2%}")
-
             height_base = base_array.shape[0]
             height_new = new_array.shape[0]
+            overlap_size = min(height_new, height_base - shift)
+
+            if overlap_size < math.ceil(height_new * 0.1):
+                logger.warning(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Too small to merge.")
+                return base_img
+            else:
+                logger.success(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Merging...")
 
             if shift < 0:
                 merged_array = np.vstack((new_array[0:-shift], base_array))
             else:
-                overlap_size = min(height_new, height_base - shift)
                 non_overlap_new = new_array[overlap_size:]
                 merged_array = np.vstack((base_array, non_overlap_new)) if non_overlap_new.size > 0 else base_array
 
