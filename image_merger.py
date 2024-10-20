@@ -1,7 +1,10 @@
+import filecmp
 import glob
+import math
 import os
 import time
 
+from matplotlib import pyplot as plt
 import numpy as np
 from PIL import Image
 from loguru import logger
@@ -90,64 +93,68 @@ class ImageMerger:
         return ImageMerger.merge_images_vertically(base_img, new_img, threshold)
 
 
-
-
 if __name__ == "__main__":
     start_time = time.time()
     logger.info("Image processing started.")
 
     base_dir = "test"  # Directory containing the images
 
-    # Define patterns to match base and new images
-    base_pattern = os.path.join(base_dir, "*_base.png")
-    new_pattern = os.path.join(base_dir, "*_new*.png")  # Handles new images with suffixes like _new_1.png
+    for subdir in os.listdir(base_dir):
+        subdir_path = os.path.join(base_dir, subdir)
+        if os.path.isdir(subdir_path):
+            logger.info(f"Processing directory: {subdir_path}")
 
-    # Retrieve lists of base and new images
-    base_images = glob.glob(base_pattern)
-    new_images = glob.glob(new_pattern)
+            # Get all image files in the directory
+            image_files = sorted(glob.glob(os.path.join(subdir_path, "screenshot_*.png")))
+            if not image_files:
+                logger.warning(f"No images found in {subdir_path}")
+                continue
 
-    logger.info(f"Found {len(base_images)} base images and {len(new_images)} new images.")
+            # Start with the first image as the base
+            base_img_path = image_files[0]
+            base_img = Image.open(base_img_path)
+            image_files_objs = [Image.open(img_path) for img_path in image_files]
+            # identical_pixels = ImageMerger.find_identical_pixels(image_files_objs)
 
-    # Create a dictionary to map identifiers to base images
-    base_dict = {}
-    for base in base_images:
-        filename = os.path.basename(base)
-        identifier = filename.split('_base.png')[0]  # Extract identifier before '_base.png'
-        base_dict.setdefault(identifier, []).append(base)
+            # Merge all subsequent images with real-time visualization
+            for new_img in image_files_objs[1:]:
+                base_img = ImageMerger.merge_images_vertically(
+                    base_img, new_img
+                )
 
-    # Create a dictionary to map identifiers to new images
-    new_dict = {}
-    for new in new_images:
-        filename = os.path.basename(new)
-        # Handle new images with possible suffixes like _new_1.png
-        identifier = filename.split('_new')[0]
-        new_dict.setdefault(identifier, []).append(new)
+                # Visualize the merged image in real-time
+                plt.imshow(base_img)
+                plt.title(f"Merging in {subdir_path}")
+                plt.axis('off')
+                plt.draw()
+                plt.pause(0.8)  # Adjust pause duration as needed
+                plt.clf()  # Clear the figure for the next update
 
-    total_pairs = 0
-    processed_pairs = 0
+            # Save the merged image temporarily
+            merged_temp_path = os.path.join(subdir_path, "merged_temp.png")
+            base_img.save(merged_temp_path)
 
-    # Iterate through each identifier and process corresponding image pairs
-    for identifier, base_list in base_dict.items():
-        corresponding_new_images = new_dict.get(identifier, [])
-        if not corresponding_new_images:
-            logger.warning(f"No new images found for base identifier '{identifier}'. Skipping.")
-            continue
+            # Compare with the existing merged image
+            existing_merged_path = os.path.join(subdir_path, "merged_screenshot.png")
+            if os.path.exists(existing_merged_path):
+                if filecmp.cmp(merged_temp_path, existing_merged_path, shallow=False):
+                    logger.success(
+                        f"Merged image in {subdir_path} matches the existing merged image."
+                    )
+                else:
+                    logger.error(
+                        f"Merged image in {subdir_path} does not match the existing merged image. "
+                        f"Debug {merged_temp_path} and press Return to continue."
+                    )
+                    input()
+            else:
+                logger.warning(
+                    f"Existing merged image not found at {existing_merged_path}. Saving merged image."
+                )
 
-        for base_path in base_list:
-            for new_path in corresponding_new_images:
-                total_pairs += 1
-                logger.info(f"Processing pair: Base='{base_path}' | New='{new_path}'")
-                pair_start_time = time.time()
+            # Clean up the temporary merged image
+            if os.path.exists(merged_temp_path):
+                os.remove(merged_temp_path)
 
-                # Process the image pair with a threshold of 0.5
-                result = ImageMerger.process_single_image((base_path, new_path, 0.5))
-
-                pair_end_time = time.time()
-                elapsed = pair_end_time - pair_start_time
-                logger.info(f"Processed pair in {elapsed:.2f} seconds.")
-                processed_pairs += 1
-
-    end_time = time.time()
-    total_elapsed = end_time - start_time
-    logger.info(f"Image processing completed. Processed {processed_pairs}/{total_pairs} pairs.")
-    logger.info(f"Total execution time: {total_elapsed:.2f} seconds.")
+    logger.info("Image processing completed.")
+    logger.info(f"Total time taken: {time.time() - start_time:.2f} seconds")
