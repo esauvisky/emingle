@@ -29,8 +29,8 @@ class ImageMerger:
 
         # We will consider both positive and negative shifts
         for shift in range(-height_new + 1, height_base):
-            if not ((shift < 0) or (shift >= height_base - height_new)):
-                continue
+            # if not ((shift < 0) or (shift >= height_base - height_new)):
+            #     continue
 
             if shift >= 0:
                 # Overlapping regions
