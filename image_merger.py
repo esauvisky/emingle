@@ -196,7 +196,7 @@ if __name__ == "__main__":
     start_time = time.time()
     logger.info("Image processing started.")
 
-    base_dir = "test"  # Directory containing the images
+    base_dir = "test"   # Directory containing the images
 
     tests = sorted(os.listdir(base_dir))
     # random.shuffle(tests)
@@ -214,21 +214,25 @@ if __name__ == "__main__":
                 continue
 
             # Start with the first image as the base
-            base_img_path = image_files[0]
-            base_img = Image.open(base_img_path)
             image_files_objs = [Image.open(img_path) for img_path in image_files]
+            logger.info(f"Images dimensions: {[img.size for img in image_files_objs]}")
+            top, bottom, left, right = ImageMerger.find_fixed_borders(image_files_objs)
+            image_files_objs = [
+                ImageMerger.remove_borders(np.array(img), top, bottom, left, right) for img in image_files_objs]
+            image_files_objs = [Image.fromarray(img) for img in image_files_objs]
 
-            # Merge all subsequent images
+            logger.info(f"Images dimensions: {[img.size for img in image_files_objs]}")
+            base_img = image_files_objs[0]
             for new_img in image_files_objs[1:]:
-                base_img = ImageMerger.merge_images_vertically(base_img, new_img, threshold=0.1)
+                base_img = ImageMerger.merge_images_vertically(base_img, new_img, threshold=0.5)
 
                 # Visualize the merged image in real-time
                 plt.imshow(base_img)
                 plt.title(f"Merging in {subdir_path}")
                 plt.axis('off')
                 plt.draw()
-                plt.pause(0.01)  # Adjust pause duration as needed
-                plt.clf()  # Clear the figure for the next update
+                plt.pause(0.001) # Adjust pause duration as needed
+                plt.clf()        # Clear the figure for the next update
 
             # Save the merged image temporarily
             merged_temp_path = os.path.join(subdir_path, "merged_temp.png")
