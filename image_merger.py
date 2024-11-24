@@ -13,23 +13,64 @@ from utils import Config
 
 class ImageMerger:
     @staticmethod
-    def find_image_overlap(base_array_gray, new_array_gray, threshold=0.1):
+    def find_fixed_borders(images, margin=0):
+        # Convert all images to grayscale numpy arrays
+        grayscale_arrays = [np.array(img.convert('L')) for img in images]
+
+        # Initialize borders
+        top, bottom, left, right = 0, grayscale_arrays[0].shape[0], 0, grayscale_arrays[0].shape[1]
+
+        # Check each side for fixed borders
+        for array in grayscale_arrays:
+            # Check top border
+            for i in range(top, array.shape[0]):
+                if not np.allclose(array[i, :], grayscale_arrays[0][i, :], atol=margin):
+                    top = i
+                    break
+
+            # Check bottom border
+            for i in range(bottom - 1, -1, -1):
+                if not np.allclose(array[i, :], grayscale_arrays[0][i, :], atol=margin):
+                    bottom = i + 1
+                    break
+
+            # Check left border
+            for i in range(left, array.shape[1]):
+                if not np.allclose(array[:, i], grayscale_arrays[0][:, i], atol=margin):
+                    left = i
+                    break
+
+            # Check right border
+            for i in range(right - 1, -1, -1):
+                if not np.allclose(array[:, i], grayscale_arrays[0][:, i], atol=margin):
+                    right = i + 1
+                    break
+
+        return top, bottom, left, right
+
+    @staticmethod
+    def remove_borders(array, top, bottom, left, right):
+        return array[top:bottom, left:right]
+
+    @staticmethod
+    def find_image_overlap(base_array_gray, new_array_gray, threshold=0.5):
         height_base, width = base_array_gray.shape
         height_new, _ = new_array_gray.shape
 
         best_shift = None
-        best_score = np.inf  # Initialize with a large value
+        best_score = np.inf # Initialize with a large value
 
         fig = None
         axs = []
         if Config["DEBUG_MODE"]:
-            fig, axs = plt.subplots(1, 3, figsize=(15, 5))  # Create three subplots side by side
+            fig, axs = plt.subplots(1, 3, figsize=(10, 5)) # Create three subplots side by side
 
         shifts = []
         match_percentages = []
 
         # We will consider both positive and negative shifts
-        for shift in range(-height_new + 1, height_base):
+        margin = height_new // 10
+        for shift in range(-height_new + 1 + margin, height_base - margin):
             if shift >= 0:
                 # Overlapping regions
                 overlap_height = min(height_base - shift, height_new)
@@ -96,19 +137,18 @@ class ImageMerger:
                 axs[2].legend(loc='upper right')
 
                 plt.draw()
-                plt.pause(0.01)  # Adjust pause duration as needed
+                plt.pause(0.00001) # Adjust pause duration as needed
 
         plt.close()
 
-        if best_score <= threshold:
-            match_score = 1 - best_score
+        match_score = 1 - best_score
+        if match_score >= threshold:
             return best_shift, match_score
-        else:
-            match_score = 1 - best_score
-            return None, match_score
+        return None, match_score
+
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img, threshold=0.1):
+    def merge_images_vertically(base_img, new_img, threshold=0.5):
         # Convert images to grayscale
         base_array_gray = np.array(base_img.convert('L'))
         new_array_gray = np.array(new_img.convert('L'))
@@ -125,20 +165,14 @@ class ImageMerger:
         if shift is not None:
             if shift >= 0:
                 overlap_height = min(base_array.shape[0] - shift, new_array.shape[0])
-                blended_overlap = ImageMerger.blend_overlap(
-                    base_array[shift:shift + overlap_height],
-                    new_array[:overlap_height]
-                )
+                blended_overlap = ImageMerger.blend_overlap(base_array[shift:shift + overlap_height], new_array[:overlap_height])
                 merged_array = np.vstack((base_array[:shift], blended_overlap, new_array[overlap_height:]))
-                logger.info(f"Overlap detected at shift {shift} with match score {match_score:.2f}. Merging...")
+                logger.info(f"Overlap detected at shift {shift}, overlap height {overlap_height}, match score {match_score:.2f}. Merging...")
             else:
                 overlap_height = min(new_array.shape[0] + shift, base_array.shape[0])
-                blended_overlap = ImageMerger.blend_overlap(
-                    new_array[-shift:-shift + overlap_height],
-                    base_array[:overlap_height]
-                )
+                blended_overlap = ImageMerger.blend_overlap(new_array[-shift:-shift + overlap_height], base_array[:overlap_height])
                 merged_array = np.vstack((new_array[:-shift], blended_overlap, base_array[overlap_height:]))
-                logger.info(f"Overlap detected at shift {shift} with match score {match_score:.2f}. Merging...")
+                logger.info(f"Overlap detected at shift {shift}, overlap height {overlap_height}, match score {match_score:.2f}. Merging...")
             return Image.fromarray(merged_array)
         else:
             # If no overlap is detected, concatenate the images

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from loguru import logger
+import numpy as np
 from utils import setup_logging, Config
 
 setup_logging("DEBUG", {"function": True, "thread": True})
@@ -65,7 +66,15 @@ def main():
         time.sleep(0.1) # Prevent busy waiting
 
     logger.info("Merging screenshots...")
+
+    # Start with the first image as the base
+    top, bottom, left, right = ImageMerger.find_fixed_borders(screenshots)
+    logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
+    logger.info(f"Top: {top}, Bottom: {bottom}, Left: {left}, Right: {right}")
+    screenshots = [ImageMerger.remove_borders(np.array(img), top, bottom, left, right) for img in screenshots]
+    screenshots = [Image.fromarray(img) for img in screenshots]
     merged_image = screenshots[0] if screenshots else None
+    logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
     for i in range(1, len(screenshots)):
         merged_image = ImageMerger.merge_images_vertically(merged_image, screenshots[i])
         if merged_image is None:
