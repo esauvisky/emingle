@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from loguru import logger
-from utils import setup_logging, DEBUG_MODE
+from utils import setup_logging, Config
 
 setup_logging("DEBUG", {"function": True, "thread": True})
 
@@ -29,11 +29,11 @@ def capture_screenshot(monitor):
         return img
 
 def main():
-    global merged_image, DEBUG_MODE
+    global merged_image
     parser = argparse.ArgumentParser(description='Screenshot merger.')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode to display images during merging.')
     args = parser.parse_args()
-    DEBUG_MODE = args.debug
+    Config["DEBUG_MODE"] = args.debug
 
     logger.info("Select the region to capture.")
     region_selector = RegionSelector()
@@ -72,7 +72,7 @@ def main():
             logger.warning(f"Failed to merge screenshot {i+1}. Skipping.")
 
     if merged_image is not None:
-        if DEBUG_MODE:
+        if Config["DEBUG_MODE"]:
             temp_dir = tempfile.mkdtemp()
             logger.info(f"Saving debug images to: {temp_dir}")
             for i, screenshot in enumerate(screenshots):

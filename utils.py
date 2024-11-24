@@ -2,7 +2,11 @@
 from loguru import logger
 import tkinter as tk
 from PIL import Image, ImageTk
-DEBUG_MODE = False
+
+Config  = {
+    "DEBUG_MODE": False
+}
+
 def setup_logging(log_lvl="DEBUG", options={}):
     file = options.get("file", False)
     function = options.get("function", False)

@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 from PIL import Image
 
-from utils import DEBUG_MODE
+from utils import Config
 
 class ImageMerger:
     @staticmethod
@@ -21,7 +21,7 @@ class ImageMerger:
 
         fig = None
         axs = []
-        if DEBUG_MODE:
+        if Config["DEBUG_MODE"]:
             fig, axs = plt.subplots(1, 3, figsize=(15, 5)) # Create three subplots side by side
 
         shifts = []
@@ -66,7 +66,7 @@ class ImageMerger:
             match_percentages.append(match_percentage)
 
             # Visualization every 20 shifts
-            if DEBUG_MODE and abs(shift) % 20 == 0:
+            if Config["DEBUG_MODE"] and abs(shift) % 20 == 0:
                 overlap_size_percentage = overlap_height / height_new # Normalize overlap size
 
                 plt.suptitle(f"Shift: {shift}\n"
