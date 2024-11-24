@@ -12,11 +12,11 @@ from loguru import logger
 
 class ImageMerger:
     @staticmethod
-    def find_image_overlap(base_array, new_array, threshold=0.8):
+    def find_image_overlap(base_array, new_array, threshold=0.05):
         height_base, width = base_array.shape
         height_new = new_array.shape[0]
 
-        shifts = np.arange(-height_new + 1, height_base)
+        shifts = np.arange(-height_new + 1, height_base + height_new)
         # Retain only the first 'height_new' * 2 and last 'height_new' * 2 shifts
         # as anything beyond that is a redundant overlap
         shifts = np.concatenate([shifts[:height_new * 2], shifts[-height_new * 2:]])
@@ -24,6 +24,11 @@ class ImageMerger:
 
         for i in range(shifts.shape[0]):
             shift = shifts[i]
+            overlap_size = min(height_new, height_base - shift)
+            overlap_size_percentage = overlap_size / height_new
+            if overlap_size_percentage == 1:
+                continue
+
             start_base = max(0, shift)
             end_base = min(height_base, shift + height_new)
             start_new = max(0, -shift)
@@ -33,12 +38,12 @@ class ImageMerger:
                 base_overlap = base_array[start_base:end_base]
                 new_overlap = new_array[start_new:end_new]
 
-
                 # Calculate matching percentage
                 match_percentages[i] = np.mean(base_overlap == new_overlap)
-                if match_percentages[i] == 1:
-                    logger.info(f"Match percentage at shift {shift} is 100%, returning early")
-                    return shift, match_percentages[i]
+                logger.debug(f"Start Base: {start_base}\tEnd Base: {end_base}\tStart New: {start_new}\tEnd New: {end_new}\tShift: {shift}\tOverlap Size: {overlap_size}\tOverlap Size Percentage: {overlap_size_percentage}\tMatch Percentage: {match_percentages[i]:.2%}")
+                # mse = np.mean(((new_overlap - base_overlap)) ** 2)
+                # original_match_percentage = 1 - (mse / 255**2)  # Normalize to [0,1]
+                # match_percentages[i] = original_match_percentage
 
         best_match_index = np.argmax(match_percentages)
         best_match_percentage = match_percentages[best_match_index]
@@ -48,7 +53,7 @@ class ImageMerger:
         return best_shift, best_match_percentage
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img, threshold=0.8):
+    def merge_images_vertically(base_img, new_img, threshold=0.1):
         # Convert images to grayscale to reduce data size
         base_img_gray = base_img.convert('L')
         new_img_gray = new_img.convert('L')
@@ -99,13 +104,14 @@ if __name__ == "__main__":
 
     base_dir = "test"  # Directory containing the images
 
-    for subdir in os.listdir(base_dir):
+    for subdir in sorted(os.listdir(base_dir)):
         subdir_path = os.path.join(base_dir, subdir)
         if os.path.isdir(subdir_path):
             logger.info(f"Processing directory: {subdir_path}")
+            dir_start_time = time.time()
 
             # Get all image files in the directory
-            image_files = sorted(glob.glob(os.path.join(subdir_path, "screenshot_*.png")))
+            image_files = sorted(glob.glob(os.path.join(subdir_path, "screenshot_*.png")), key=lambda x: int(x.split("_")[-1].split(".")[0]))
             if not image_files:
                 logger.warning(f"No images found in {subdir_path}")
                 continue
@@ -127,7 +133,7 @@ if __name__ == "__main__":
                 plt.title(f"Merging in {subdir_path}")
                 plt.axis('off')
                 plt.draw()
-                plt.pause(0.8)  # Adjust pause duration as needed
+                plt.pause(0.01)  # Adjust pause duration as needed
                 plt.clf()  # Clear the figure for the next update
 
             # Save the merged image temporarily
