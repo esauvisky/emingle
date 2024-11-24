@@ -152,7 +152,7 @@ if __name__ == "__main__":
                         f"Merged image in {subdir_path} does not match the existing merged image. "
                         f"Debug {merged_temp_path} and press Return to continue."
                     )
-                    input()
+                    # input()
             else:
                 logger.warning(
                     f"Existing merged image not found at {existing_merged_path}. Saving merged image."
@@ -161,6 +161,8 @@ if __name__ == "__main__":
             # Clean up the temporary merged image
             if os.path.exists(merged_temp_path):
                 os.remove(merged_temp_path)
+
+            logger.info(f"Completed processing directory: {subdir_path} in {time.time() - dir_start_time:.2f} seconds")
 
     logger.info("Image processing completed.")
     logger.info(f"Total time taken: {time.time() - start_time:.2f} seconds")
