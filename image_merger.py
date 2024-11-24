@@ -180,12 +180,14 @@ class ImageMerger:
                 overlap_height = min(base_array.shape[0] - shift, new_array.shape[0])
                 blended_overlap = ImageMerger.blend_overlap(base_array[shift:shift + overlap_height], new_array[:overlap_height])
                 merged_array = np.vstack((base_array[:shift], blended_overlap, new_array[overlap_height:]))
-                logger.info(f"Overlap detected at shift {shift}, overlap height {overlap_height}, match score {match_score:.2f}. Merging...")
+                logger.info(f"Overlap detected at shift {shift}, overlap height {overlap_height}, match score {match_score:.8
+                f}. Merging...")
             else:
                 overlap_height = min(new_array.shape[0] + shift, base_array.shape[0])
                 blended_overlap = ImageMerger.blend_overlap(new_array[-shift:-shift + overlap_height], base_array[:overlap_height])
                 merged_array = np.vstack((new_array[:-shift], blended_overlap, base_array[overlap_height:]))
-                logger.info(f"Overlap detected at shift {shift}, overlap height {overlap_height}, match score {match_score:.2f}. Merging...")
+                logger.info(f"Overlap detected at shift {shift}, overlap height {overlap_height}, match score {match_score:.8
+                f}. Merging...")
             return Image.fromarray(merged_array)
         else:
             # If no overlap is detected, concatenate the images
