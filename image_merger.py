@@ -27,7 +27,6 @@ class ImageMerger:
                 if not np.allclose(array[i, :], grayscale_arrays[0][i, :], atol=margin):
                     top = i
                     break
-
             # Check bottom border
             for i in range(bottom - 1, -1, -1):
                 if not np.allclose(array[i, :], grayscale_arrays[0][i, :], atol=margin):
@@ -68,9 +67,18 @@ class ImageMerger:
         shifts = []
         match_percentages = []
 
-        # We will consider both positive and negative shifts
+        # Define the range for early shifts and delayed shifts
         margin = height_new // 10
-        for shift in range(-height_new + 1 + margin, height_base - margin):
+        first_list = list(range(-height_new + 1 + margin, 0))
+        second_list = list(range(height_base - margin, height_base - height_new + 1, -1))
+        offsets = []
+        for x, y in zip(first_list, second_list):
+            offsets.append(x)
+            offsets.append(y)
+        offsets.extend(list(range(0, height_base - height_new + 1)))
+
+        # Combine shifts prioritizing early and delayed shifts, then check remaining
+        for shift in offsets:
             if shift >= 0:
                 # Overlapping regions
                 overlap_height = min(height_base - shift, height_new)
@@ -91,7 +99,7 @@ class ImageMerger:
                 continue
 
             # Compute Sum of Absolute Differences
-            sad = np.sum(np.abs(base_overlap.astype(np.int16) - new_overlap.astype(np.int16)))
+            sad = np.sum(np.abs(base_overlap - new_overlap))
 
             # Normalize SAD by the number of pixels and maximum pixel value
             sad_normalized = sad / (overlap_height * width * 255)
@@ -101,6 +109,11 @@ class ImageMerger:
                 best_shift = shift
 
             match_percentage = 1 - sad_normalized
+
+            if match_percentage == 1:
+                logger.info(f"Match percentage at shift {shift} is 100%, returning early")
+                return shift, match_percentage
+
             shifts.append(shift)
             match_percentages.append(match_percentage)
 
