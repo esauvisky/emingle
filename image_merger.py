@@ -105,8 +105,8 @@ class ImageMerger:
             match_percentages.append(match_percentage)
 
             # Visualization every 20 shifts
-            if Config["DEBUG_MODE"] and abs(shift) % 100 == 0:
-                overlap_size_percentage = overlap_height / height_new  # Normalize overlap size
+            if Config["DEBUG_MODE"] and abs(shift) % 20 == 0:
+                overlap_size_percentage = overlap_height / height_new # Normalize overlap size
 
                 plt.suptitle(f"Shift: {shift}\n"
                              f"Overlap Size Percentage: {overlap_size_percentage:.2%}\n"
@@ -155,7 +155,7 @@ class ImageMerger:
 
         # Ensure images have the same width
         if base_array_gray.shape[1] != new_array_gray.shape[1]:
-            raise ValueError("Images must have the same width")
+            raise ValueError(f"Images must have the same width. Base width: {base_array_gray.shape[1]}, New width: {new_array_gray.shape[1]}")
 
         shift, match_score = ImageMerger.find_image_overlap(base_array_gray, new_array_gray, threshold)
 
@@ -185,10 +185,10 @@ class ImageMerger:
         height, width, _ = base_overlap.shape
         alpha = np.linspace(0, 1, height).reshape(height, 1)
         alpha = np.repeat(alpha, width, axis=1)
-        alpha = np.expand_dims(alpha, axis=2)  # Make it (height, width, 1) to match RGB channels
+        alpha = np.expand_dims(alpha, axis=2) # Make it (height, width, 1) to match RGB channels
 
         # Blend the images
-        blended_overlap = (1 - alpha) * base_overlap + alpha * new_overlap
+        blended_overlap = (1-alpha) * base_overlap + alpha*new_overlap
         return blended_overlap.astype(np.uint8)
 
 
