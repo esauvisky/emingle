@@ -10,6 +10,7 @@ from PIL import Image
 
 from utils import Config
 
+
 class ImageMerger:
     @staticmethod
     def find_image_overlap(base_array_gray, new_array_gray, threshold=0.1):
@@ -17,21 +18,18 @@ class ImageMerger:
         height_new, _ = new_array_gray.shape
 
         best_shift = None
-        best_score = np.inf # Initialize with a large value
+        best_score = np.inf  # Initialize with a large value
 
         fig = None
         axs = []
         if Config["DEBUG_MODE"]:
-            fig, axs = plt.subplots(1, 3, figsize=(15, 5)) # Create three subplots side by side
+            fig, axs = plt.subplots(1, 3, figsize=(15, 5))  # Create three subplots side by side
 
         shifts = []
         match_percentages = []
 
         # We will consider both positive and negative shifts
         for shift in range(-height_new + 1, height_base):
-            # if not ((shift < 0) or (shift >= height_base - height_new)):
-            #     continue
-
             if shift >= 0:
                 # Overlapping regions
                 overlap_height = min(height_base - shift, height_new)
@@ -55,7 +53,7 @@ class ImageMerger:
             sad = np.sum(np.abs(base_overlap.astype(np.int16) - new_overlap.astype(np.int16)))
 
             # Normalize SAD by the number of pixels and maximum pixel value
-            sad_normalized = sad / (overlap_height*width*255)
+            sad_normalized = sad / (overlap_height * width * 255)
 
             if sad_normalized < best_score:
                 best_score = sad_normalized
@@ -66,8 +64,8 @@ class ImageMerger:
             match_percentages.append(match_percentage)
 
             # Visualization every 20 shifts
-            if Config["DEBUG_MODE"] and abs(shift) % 20 == 0:
-                overlap_size_percentage = overlap_height / height_new # Normalize overlap size
+            if Config["DEBUG_MODE"] and abs(shift) % 100 == 0:
+                overlap_size_percentage = overlap_height / height_new  # Normalize overlap size
 
                 plt.suptitle(f"Shift: {shift}\n"
                              f"Overlap Size Percentage: {overlap_size_percentage:.2%}\n"
@@ -98,7 +96,7 @@ class ImageMerger:
                 axs[2].legend(loc='upper right')
 
                 plt.draw()
-                plt.pause(0.00001) # Adjust pause duration as needed
+                plt.pause(0.01)  # Adjust pause duration as needed
 
         plt.close()
 
@@ -126,11 +124,20 @@ class ImageMerger:
 
         if shift is not None:
             if shift >= 0:
-                merged_array = np.vstack((base_array[:shift], new_array))
+                overlap_height = min(base_array.shape[0] - shift, new_array.shape[0])
+                blended_overlap = ImageMerger.blend_overlap(
+                    base_array[shift:shift + overlap_height],
+                    new_array[:overlap_height]
+                )
+                merged_array = np.vstack((base_array[:shift], blended_overlap, new_array[overlap_height:]))
                 logger.info(f"Overlap detected at shift {shift} with match score {match_score:.2f}. Merging...")
             else:
-                # Negative shifts can be handled similarly if needed
-                merged_array = np.vstack((new_array[:-shift], base_array))
+                overlap_height = min(new_array.shape[0] + shift, base_array.shape[0])
+                blended_overlap = ImageMerger.blend_overlap(
+                    new_array[-shift:-shift + overlap_height],
+                    base_array[:overlap_height]
+                )
+                merged_array = np.vstack((new_array[:-shift], blended_overlap, base_array[overlap_height:]))
                 logger.info(f"Overlap detected at shift {shift} with match score {match_score:.2f}. Merging...")
             return Image.fromarray(merged_array)
         else:
@@ -139,18 +146,23 @@ class ImageMerger:
             return base_img
 
     @staticmethod
-    def process_single_image(args):
-        base_img_path, new_img_path, threshold = args
-        base_img = Image.open(base_img_path)
-        new_img = Image.open(new_img_path)
-        return ImageMerger.merge_images_vertically(base_img, new_img, threshold)
+    def blend_overlap(base_overlap, new_overlap):
+        # Create a linear gradient for blending
+        height, width, _ = base_overlap.shape
+        alpha = np.linspace(0, 1, height).reshape(height, 1)
+        alpha = np.repeat(alpha, width, axis=1)
+        alpha = np.expand_dims(alpha, axis=2)  # Make it (height, width, 1) to match RGB channels
+
+        # Blend the images
+        blended_overlap = (1 - alpha) * base_overlap + alpha * new_overlap
+        return blended_overlap.astype(np.uint8)
 
 
 if __name__ == "__main__":
     start_time = time.time()
     logger.info("Image processing started.")
 
-    base_dir = "test"   # Directory containing the images
+    base_dir = "test"  # Directory containing the images
 
     tests = sorted(os.listdir(base_dir))
     # random.shuffle(tests)
@@ -171,7 +183,6 @@ if __name__ == "__main__":
             base_img_path = image_files[0]
             base_img = Image.open(base_img_path)
             image_files_objs = [Image.open(img_path) for img_path in image_files]
-            # identical_pixels = ImageMerger.find_identical_pixels(image_files_objs)
 
             # Merge all subsequent images
             for new_img in image_files_objs[1:]:
@@ -182,8 +193,8 @@ if __name__ == "__main__":
                 plt.title(f"Merging in {subdir_path}")
                 plt.axis('off')
                 plt.draw()
-                plt.pause(0.001) # Adjust pause duration as needed
-                plt.clf()        # Clear the figure for the next update
+                plt.pause(0.01)  # Adjust pause duration as needed
+                plt.clf()  # Clear the figure for the next update
 
             # Save the merged image temporarily
             merged_temp_path = os.path.join(subdir_path, "merged_temp.png")
