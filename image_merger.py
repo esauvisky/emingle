@@ -1,123 +1,141 @@
 import filecmp
 import glob
-import math
 import os
-import random
 import time
 
+from loguru import logger
 from matplotlib import pyplot as plt
 import numpy as np
 from PIL import Image
-from loguru import logger
+
+from .emingle import DEBUG_MODE
 
 
 class ImageMerger:
     @staticmethod
+    def find_image_overlap(base_array_gray, new_array_gray, threshold=0.1):
+        height_base, width = base_array_gray.shape
+        height_new, _ = new_array_gray.shape
 
+        best_shift = None
+        best_score = np.inf # Initialize with a large value
 
-    def find_image_overlap(base_array, new_array, threshold=0.05):
-        height_base, width_base = base_array.shape
-        height_new, width_new = new_array.shape
+        fig = None
+        axs = []
+        if DEBUG_MODE:
+            fig, axs = plt.subplots(1, 3, figsize=(15, 5)) # Create three subplots side by side
 
-        # Create shifts from the negative height of new_array to the positive height of base_array
-        shifts = np.arange(-height_new + 1, height_base)  # Range from (-height_new + 1) to (height_base - 1)
+        shifts = []
+        match_percentages = []
 
-        match_percentages = np.zeros(shifts.shape[0], dtype=np.float32)
-
-
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))  # Create two subplots side by side
-        for ix, shift in enumerate(shifts):
-            if shift > 0 and shift < height_base - height_new:
+        # We will consider both positive and negative shifts
+        for shift in range(-height_new + 1, height_base):
+            if not ((shift < 0) or (shift >= height_base - height_new)):
                 continue
 
-            # Calculate the overlap ranges
-            if shift < 0:
-                # Negative shift: new_array extends above the top of base_array
-                start_base = 0
-                end_base = height_new + shift  # Overlapping part in base_array
-                start_new = -shift  # Starting point in new_array to match base_array
-                end_new = height_new  # Entire height of new_array
+            if shift >= 0:
+                # Overlapping regions
+                overlap_height = min(height_base - shift, height_new)
+                if overlap_height <= 0:
+                    continue
+                base_overlap = base_array_gray[shift:shift + overlap_height, :]
+                new_overlap = new_array_gray[:overlap_height, :]
             else:
-                # Positive shift: new_array starts lower in base_array
-                start_base = shift
-                end_base = min(height_base, shift + height_new)  # Ensure we don't exceed base_array
-                start_new = 0  # Starting from the beginning of new_array
-                end_new = end_base - start_base  # Overlapping height
+                # Negative shift: new image is shifted down
+                overlap_height = min(height_new + shift, height_base)
+                if overlap_height <= 0:
+                    continue
+                base_overlap = base_array_gray[:overlap_height, :]
+                new_overlap = new_array_gray[-shift:-shift + overlap_height, :]
 
-            # Extract the overlapping regions
-            base_overlap = base_array[start_base:end_base]
-            new_overlap = new_array[start_new:end_new]
+            # Ensure the overlapping regions have the same dimensions
+            if base_overlap.shape != new_overlap.shape:
+                continue
 
-            # Calculate matching percentage
+            # Compute Sum of Absolute Differences
+            sad = np.sum(np.abs(base_overlap.astype(np.int16) - new_overlap.astype(np.int16)))
 
-            match_percentages[ix] = np.mean(base_overlap == new_overlap) * (1 - (end_base - start_base) / height_new)
+            # Normalize SAD by the number of pixels and maximum pixel value
+            sad_normalized = sad / (overlap_height*width*255)
 
-            plt.suptitle(f"Shift: {shift}\nOverlap Size Percentage: {((end_base - start_base) / height_new):.2%}\nMatch Percentage: {match_percentages[ix]:.2%}")
-            # Visualization every 10 shifts
-            if abs(shift) % 10 == 0:
-                # plt.clf()  # Clear the figure for the next update
-                # plt.ion()  # Turn on interactive mode for real-time plotting
-                # Update the subplots to show base_overlap and new_overlap
+            if sad_normalized < best_score:
+                best_score = sad_normalized
+                best_shift = shift
+
+            match_percentage = 1 - sad_normalized
+            shifts.append(shift)
+            match_percentages.append(match_percentage)
+
+            # Visualization every 20 shifts
+            if DEBUG_MODE and abs(shift) % 20 == 0:
+                overlap_size_percentage = overlap_height / height_new # Normalize overlap size
+
+                plt.suptitle(f"Shift: {shift}\n"
+                             f"Overlap Size Percentage: {overlap_size_percentage:.2%}\n"
+                             f"Match Percentage: {match_percentage:.2%}")
+
+                # Logging for debugging
+                logger.debug(f"Shift: {shift}. Overlapping height: {overlap_height}, "
+                             f"Match Percentage: {match_percentage:.2%}")
+
                 axs[0].clear()
                 axs[1].clear()
+                axs[2].clear()
 
                 # Display the overlapping regions side by side
                 axs[0].imshow(base_overlap, cmap='gray')
-                axs[0].set_title(f"Base Overlap\nStart: {start_base}, End: {end_base}")
+                axs[0].set_title("Base Overlap")
                 axs[0].axis('off')
 
                 axs[1].imshow(new_overlap, cmap='gray')
-                axs[1].set_title(f"New Overlap\nStart: {start_new}, End: {end_new}")
+                axs[1].set_title("New Overlap")
                 axs[1].axis('off')
 
-                plt.draw()
-                # Draw the updates
-                plt.pause(0.001)  # Adjust pause duration as needed
-                # plt.pause(0.001)  # Adjust pause duration as needed
+                # Plot match percentage against shift
+                axs[2].plot(shifts, match_percentages, label='Match %', color='blue')
+                axs[2].set_title("Match Percentage vs. Shift")
+                axs[2].set_xlabel("Shift")
+                axs[2].set_ylabel("Match Percentage")
+                axs[2].legend(loc='upper right')
 
-        # plt.ioff()  # Turn off interactive mode
-        # plt.show()  # Show the last plot
+                plt.draw()
+                plt.pause(0.00001) # Adjust pause duration as needed
+
         plt.close()
 
-        # Find the best match shift and its corresponding percentage
-        best_match_index = np.argmax(match_percentages)
-        best_match_percentage = match_percentages[best_match_index]
-        best_shift = shifts[best_match_index] if best_match_percentage >= threshold else None
-
-        return best_shift, best_match_percentage
-
-
+        if best_score <= threshold:
+            match_score = 1 - best_score
+            return best_shift, match_score
+        else:
+            match_score = 1 - best_score
+            return None, match_score
 
     @staticmethod
     def merge_images_vertically(base_img, new_img, threshold=0.1):
-        # Convert images to grayscale to reduce data size
-        base_img_gray = base_img.convert('L')
-        new_img_gray = new_img.convert('L')
+        # Convert images to grayscale
+        base_array_gray = np.array(base_img.convert('L'))
+        new_array_gray = np.array(new_img.convert('L'))
 
-        base_array = np.array(base_img)
-        new_array = np.array(new_img)
-        base_array_gray = np.array(base_img_gray)
-        new_array_gray = np.array(new_img_gray)
-
+        # Ensure images have the same width
         if base_array_gray.shape[1] != new_array_gray.shape[1]:
             raise ValueError("Images must have the same width")
 
-        shift, match_percentage = ImageMerger.find_image_overlap(base_array_gray, new_array_gray, threshold)
+        shift, match_score = ImageMerger.find_image_overlap(base_array_gray, new_array_gray, threshold)
+
+        base_array = np.array(base_img)
+        new_array = np.array(new_img)
 
         if shift is not None:
-            height_base = base_array.shape[0]
-            height_new = new_array.shape[0]
-            overlap_size = min(height_new, height_base - shift)  # Ensure we don't exceed base_array
-
-            if shift < 0:
-                merged_array = np.vstack((new_array[0:-shift], base_array))
-                logger.info(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Merging...")
+            if shift >= 0:
+                merged_array = np.vstack((base_array[:shift], new_array))
+                logger.info(f"Overlap detected at shift {shift} with match score {match_score:.2f}. Merging...")
             else:
-                merged_array = np.vstack((base_array[0:shift], new_array))
-                logger.info(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Merging...")
-
+                # Negative shifts can be handled similarly if needed
+                merged_array = np.vstack((new_array[:-shift], base_array))
+                logger.info(f"Overlap detected at shift {shift} with match score {match_score:.2f}. Merging...")
             return Image.fromarray(merged_array)
         else:
+            # If no overlap is detected, concatenate the images
             logger.warning("No overlap detected above the threshold, returning original base image")
             return base_img
 
@@ -133,18 +151,19 @@ if __name__ == "__main__":
     start_time = time.time()
     logger.info("Image processing started.")
 
-    base_dir = "test"  # Directory containing the images
+    base_dir = "test"   # Directory containing the images
 
     tests = sorted(os.listdir(base_dir))
-    random.shuffle(tests)
-    for subdir in tests:
+    # random.shuffle(tests)
+    for subdir in tests[2:]:
         subdir_path = os.path.join(base_dir, subdir)
         if os.path.isdir(subdir_path):
             logger.info(f"Processing directory: {subdir_path}")
             dir_start_time = time.time()
 
             # Get all image files in the directory
-            image_files = sorted(glob.glob(os.path.join(subdir_path, "screenshot_*.png")), key=lambda x: int(x.split("_")[-1].split(".")[0]))
+            image_files = sorted(glob.glob(os.path.join(subdir_path, "screenshot_*.png")),
+                                 key=lambda x: int(x.split("_")[-1].split(".")[0]))
             if not image_files:
                 logger.warning(f"No images found in {subdir_path}")
                 continue
@@ -155,19 +174,17 @@ if __name__ == "__main__":
             image_files_objs = [Image.open(img_path) for img_path in image_files]
             # identical_pixels = ImageMerger.find_identical_pixels(image_files_objs)
 
-            # Merge all subsequent images with real-time visualization
+            # Merge all subsequent images
             for new_img in image_files_objs[1:]:
-                base_img = ImageMerger.merge_images_vertically(
-                    base_img, new_img
-                )
+                base_img = ImageMerger.merge_images_vertically(base_img, new_img, threshold=0.1)
 
                 # Visualize the merged image in real-time
                 plt.imshow(base_img)
                 plt.title(f"Merging in {subdir_path}")
                 plt.axis('off')
                 plt.draw()
-                plt.pause(0.01)  # Adjust pause duration as needed
-                plt.clf()  # Clear the figure for the next update
+                plt.pause(0.001) # Adjust pause duration as needed
+                plt.clf()        # Clear the figure for the next update
 
             # Save the merged image temporarily
             merged_temp_path = os.path.join(subdir_path, "merged_temp.png")
@@ -177,19 +194,13 @@ if __name__ == "__main__":
             existing_merged_path = os.path.join(subdir_path, "merged_screenshot.png")
             if os.path.exists(existing_merged_path):
                 if filecmp.cmp(merged_temp_path, existing_merged_path, shallow=False):
-                    logger.success(
-                        f"Merged image in {subdir_path} matches the existing merged image."
-                    )
+                    logger.success(f"Merged image in {subdir_path} matches the existing merged image.")
                 else:
-                    logger.error(
-                        f"Merged image in {subdir_path} does not match the existing merged image. "
-                        f"Debug {merged_temp_path} and press Return to continue."
-                    )
-                    # input()
+                    logger.error(f"Merged image in {subdir_path} does not match the existing merged image. "
+                                 f"Debug {merged_temp_path} and press Return to continue.")
+                    input()
             else:
-                logger.warning(
-                    f"Existing merged image not found at {existing_merged_path}. Saving merged image."
-                )
+                logger.warning(f"Existing merged image not found at {existing_merged_path}. Saving merged image.")
 
             # Clean up the temporary merged image
             if os.path.exists(merged_temp_path):
