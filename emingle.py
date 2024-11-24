@@ -28,13 +28,14 @@ def capture_screenshot(monitor):
         img = Image.frombytes('RGB', sct_img.size, sct_img.rgb)
         return img
 
+DEBUG_MODE = False
 
 def main():
-    global merged_image
+    global merged_image, DEBUG_MODE
     parser = argparse.ArgumentParser(description='Screenshot merger.')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode to display images during merging.')
     args = parser.parse_args()
-    debug_mode = args.debug
+    DEBUG_MODE = args.debug
 
     logger.info("Select the region to capture.")
     region_selector = RegionSelector()
@@ -73,7 +74,7 @@ def main():
             logger.warning(f"Failed to merge screenshot {i+1}. Skipping.")
 
     if merged_image is not None:
-        if debug_mode:
+        if DEBUG_MODE:
             temp_dir = tempfile.mkdtemp()
             logger.info(f"Saving debug images to: {temp_dir}")
             for i, screenshot in enumerate(screenshots):
