@@ -135,7 +135,9 @@ if __name__ == "__main__":
 
     base_dir = "test"  # Directory containing the images
 
-    for subdir in sorted(os.listdir(base_dir)):
+    tests = sorted(os.listdir(base_dir))
+    random.shuffle(tests)
+    for subdir in tests:
         subdir_path = os.path.join(base_dir, subdir)
         if os.path.isdir(subdir_path):
             logger.info(f"Processing directory: {subdir_path}")
