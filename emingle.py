@@ -56,14 +56,17 @@ def main():
                 " - Scroll the underlying content to capture new screenshots.\n"
                 " - Press Escape to finish capturing, merge images and send to your clipboard.\n")
 
-    screenshots = []
+    # Take initial screenshot
+    screenshots = [capture_screenshot(selection)]
+    logger.info("Captured initial screenshot.")
+
     while not keyboard_listener.exit_event:
         if mouse_listener.screenshot_event:
             mouse_listener.screenshot_event = False
             img = capture_screenshot(selection)
             logger.info("Captured image.")
             screenshots.append(img)
-        time.sleep(0.1) # Prevent busy waiting
+        time.sleep(0.001) # Prevent busy waiting
 
     logger.info("Merging screenshots...")
 
