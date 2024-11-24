@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from loguru import logger
-from utils import setup_logging
+from utils import setup_logging, DEBUG_MODE
 
 setup_logging("DEBUG", {"function": True, "thread": True})
 
@@ -27,8 +27,6 @@ def capture_screenshot(monitor):
         sct_img = sct.grab(monitor)
         img = Image.frombytes('RGB', sct_img.size, sct_img.rgb)
         return img
-
-DEBUG_MODE = False
 
 def main():
     global merged_image, DEBUG_MODE

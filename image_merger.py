@@ -8,8 +8,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 from PIL import Image
 
-from .emingle import DEBUG_MODE
-
+from utils import DEBUG_MODE
 
 class ImageMerger:
     @staticmethod
