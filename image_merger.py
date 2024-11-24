@@ -2,6 +2,7 @@ import filecmp
 import glob
 import math
 import os
+import random
 import time
 
 from matplotlib import pyplot as plt
@@ -12,45 +13,80 @@ from loguru import logger
 
 class ImageMerger:
     @staticmethod
-    def find_image_overlap(base_array, new_array, threshold=0.05):
-        height_base, width = base_array.shape
-        height_new = new_array.shape[0]
 
-        shifts = np.arange(-height_new + 1, height_base + height_new)
-        # Retain only the first 'height_new' * 2 and last 'height_new' * 2 shifts
-        # as anything beyond that is a redundant overlap
-        shifts = np.concatenate([shifts[:height_new * 2], shifts[-height_new * 2:]])
+
+    def find_image_overlap(base_array, new_array, threshold=0.05):
+        height_base, width_base = base_array.shape
+        height_new, width_new = new_array.shape
+
+        # Create shifts from the negative height of new_array to the positive height of base_array
+        shifts = np.arange(-height_new + 1, height_base)  # Range from (-height_new + 1) to (height_base - 1)
+
         match_percentages = np.zeros(shifts.shape[0], dtype=np.float32)
 
-        for i in range(shifts.shape[0]):
-            shift = shifts[i]
-            overlap_size = min(height_new, height_base - shift)
-            overlap_size_percentage = overlap_size / height_new
-            if overlap_size_percentage == 1:
+
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5))  # Create two subplots side by side
+        for ix, shift in enumerate(shifts):
+            if shift > 0 and shift < height_base - height_new:
                 continue
 
-            start_base = max(0, shift)
-            end_base = min(height_base, shift + height_new)
-            start_new = max(0, -shift)
-            end_new = start_new + (end_base - start_base)
+            # Calculate the overlap ranges
+            if shift < 0:
+                # Negative shift: new_array extends above the top of base_array
+                start_base = 0
+                end_base = height_new + shift  # Overlapping part in base_array
+                start_new = -shift  # Starting point in new_array to match base_array
+                end_new = height_new  # Entire height of new_array
+            else:
+                # Positive shift: new_array starts lower in base_array
+                start_base = shift
+                end_base = min(height_base, shift + height_new)  # Ensure we don't exceed base_array
+                start_new = 0  # Starting from the beginning of new_array
+                end_new = end_base - start_base  # Overlapping height
 
-            if end_base - start_base > 0:
-                base_overlap = base_array[start_base:end_base]
-                new_overlap = new_array[start_new:end_new]
+            # Extract the overlapping regions
+            base_overlap = base_array[start_base:end_base]
+            new_overlap = new_array[start_new:end_new]
 
-                # Calculate matching percentage
-                match_percentages[i] = np.mean(base_overlap == new_overlap)
-                logger.debug(f"Start Base: {start_base}\tEnd Base: {end_base}\tStart New: {start_new}\tEnd New: {end_new}\tShift: {shift}\tOverlap Size: {overlap_size}\tOverlap Size Percentage: {overlap_size_percentage}\tMatch Percentage: {match_percentages[i]:.2%}")
-                # mse = np.mean(((new_overlap - base_overlap)) ** 2)
-                # original_match_percentage = 1 - (mse / 255**2)  # Normalize to [0,1]
-                # match_percentages[i] = original_match_percentage
+            # Calculate matching percentage
 
+            match_percentages[ix] = np.mean(base_overlap == new_overlap) * (1 - (end_base - start_base) / height_new)
+
+            plt.suptitle(f"Shift: {shift}\nOverlap Size Percentage: {((end_base - start_base) / height_new):.2%}\nMatch Percentage: {match_percentages[ix]:.2%}")
+            # Visualization every 10 shifts
+            if abs(shift) % 10 == 0:
+                # plt.clf()  # Clear the figure for the next update
+                # plt.ion()  # Turn on interactive mode for real-time plotting
+                # Update the subplots to show base_overlap and new_overlap
+                axs[0].clear()
+                axs[1].clear()
+
+                # Display the overlapping regions side by side
+                axs[0].imshow(base_overlap, cmap='gray')
+                axs[0].set_title(f"Base Overlap\nStart: {start_base}, End: {end_base}")
+                axs[0].axis('off')
+
+                axs[1].imshow(new_overlap, cmap='gray')
+                axs[1].set_title(f"New Overlap\nStart: {start_new}, End: {end_new}")
+                axs[1].axis('off')
+
+                plt.draw()
+                # Draw the updates
+                plt.pause(0.001)  # Adjust pause duration as needed
+                # plt.pause(0.001)  # Adjust pause duration as needed
+
+        # plt.ioff()  # Turn off interactive mode
+        # plt.show()  # Show the last plot
+        plt.close()
+
+        # Find the best match shift and its corresponding percentage
         best_match_index = np.argmax(match_percentages)
         best_match_percentage = match_percentages[best_match_index]
         best_shift = shifts[best_match_index] if best_match_percentage >= threshold else None
 
-        end_time = time.time()
         return best_shift, best_match_percentage
+
+
 
     @staticmethod
     def merge_images_vertically(base_img, new_img, threshold=0.1):
@@ -71,19 +107,14 @@ class ImageMerger:
         if shift is not None:
             height_base = base_array.shape[0]
             height_new = new_array.shape[0]
-            overlap_size = min(height_new, height_base - shift)
-
-            if overlap_size < math.ceil(height_new * 0.1):
-                logger.warning(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Too small to merge.")
-                return base_img
-            else:
-                logger.success(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Merging...")
+            overlap_size = min(height_new, height_base - shift)  # Ensure we don't exceed base_array
 
             if shift < 0:
                 merged_array = np.vstack((new_array[0:-shift], base_array))
+                logger.info(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Merging...")
             else:
-                non_overlap_new = new_array[overlap_size:]
-                merged_array = np.vstack((base_array, non_overlap_new)) if non_overlap_new.size > 0 else base_array
+                merged_array = np.vstack((base_array[0:shift], new_array))
+                logger.info(f"Overlap detected at height {shift} with {overlap_size} rows of overlap and match percentage {match_percentage:.2%}. Merging...")
 
             return Image.fromarray(merged_array)
         else:
