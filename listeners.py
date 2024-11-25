@@ -43,8 +43,22 @@ class MouseScrollListener:
             listener.join()
 
     def _on_scroll(self, x, y, dx, dy):
+        if self.exit_event:
+            return False
         self.scroll_count += 1
         logger.debug(f"Mouse scrolled: count={self.scroll_count}")
         if self.scroll_count >= self.scroll_threshold:
             self.screenshot_event = True
             self.scroll_count = 0
+
+class WxAppRunner:
+    def __init__(self, app_class):
+        self.app_class = app_class
+
+    def start(self):
+        app_thread = Thread(target=self._run_app, daemon=True)
+        app_thread.start()
+        self.app_thread = app_thread
+
+    def _run_app(self):
+        self.app_class.MainLoop()
