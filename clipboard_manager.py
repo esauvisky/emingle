@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 from io import BytesIO
+import sys
 import time
 from PIL import Image, ImageDraw
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtGui import QPixmap, QImage
-import sys
+from PyQt5.QtCore import QTimer
 from loguru import logger
 
 class ClipboardManager:
@@ -26,8 +27,6 @@ class ClipboardManager:
             else:
                 logger.debug("Using existing QApplication instance.")
 
-            clipboard = app.clipboard()
-
             # Convert PIL Image to bytes in PNG format
             buffer = BytesIO()
             image.save(buffer, format='PNG')
@@ -42,16 +41,24 @@ class ClipboardManager:
             logger.debug("Loaded QPixmap from PNG data.")
 
             # Set QPixmap to clipboard
+            clipboard = app.clipboard()
             clipboard.setPixmap(pixmap)
             logger.info("Image copied to clipboard successfully.")
 
-            # Process events to ensure the clipboard is updated
-            app.processEvents()
+            # Start the event loop to keep the application alive
+            # Set a timer to exit the application after a short delay
+            def exit_app():
+                app.quit()
+                logger.debug("Exiting QApplication event loop.")
 
-            # Run a small event loop to ensure clipboard synchronization
-            for _ in range(10):  # Small number of iterations to process pending events
-                time.sleep(0.001)
-                app.processEvents()
+            # Use a QTimer to quit the application after 1 second
+            timer = QTimer()
+            timer.timeout.connect(exit_app)
+            timer.setSingleShot(True)
+            timer.start(1000)  # Time in milliseconds
+
+            # Start the event loop
+            app.exec_()
 
         except Exception as e:
             logger.exception(f"Failed to copy image to clipboard: {e}")
