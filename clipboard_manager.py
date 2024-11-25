@@ -47,7 +47,12 @@ class ClipboardManager:
 
             # Process events to ensure the clipboard is updated
             app.processEvents()
-            time.sleep(0.2);
+
+            # Run a small event loop to ensure clipboard synchronization
+            for _ in range(10):  # Small number of iterations to process pending events
+                time.sleep(0.001)
+                app.processEvents()
+
         except Exception as e:
             logger.exception(f"Failed to copy image to clipboard: {e}")
 
