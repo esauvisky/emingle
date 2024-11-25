@@ -46,10 +46,10 @@ def main():
 
     logger.info(f"Selected region: {selection}")
 
-    app = region_selector.highlight_region(selection["left"], selection["top"], selection["width"], selection["height"])
-    wx_app_runner = WxAppRunner(app)
-    wx_app_runner.start()
-    time.sleep(0.5)
+    if not Config["DEBUG_MODE"]:
+        app = region_selector.highlight_region(selection["left"], selection["top"], selection["width"], selection["height"])
+        wx_app_runner = WxAppRunner(app)
+        wx_app_runner.start()
 
     keyboard_listener = KeyboardListener()
     keyboard_listener.start()
@@ -77,17 +77,26 @@ def main():
     logger.info("Merging screenshots...")
 
     # Start with the first image as the base
+
+    # Find and remove fixed borders
     top, bottom, left, right = ImageMerger.find_fixed_borders(screenshots)
+    logger.info(f"Cropping images to region: top={top}, bottom={bottom}, left={left}, right={right}")
+
+    cropped_images = []
+    for img in screenshots:
+        img_array = np.array(img)
+        cropped_array = ImageMerger.remove_borders(img_array, top, bottom, left, right)
+        cropped_img = Image.fromarray(cropped_array)
+        cropped_images.append(cropped_img)
+
     logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
-    logger.info(f"Top: {top}, Bottom: {bottom}, Left: {left}, Right: {right}")
-    screenshots = [ImageMerger.remove_borders(np.array(img), top, bottom, left, right) for img in screenshots]
-    screenshots = [Image.fromarray(img) for img in screenshots]
-    merged_image = screenshots[0] if screenshots else None
-    logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
-    for i in range(1, len(screenshots)):
-        merged_image = ImageMerger.merge_images_vertically(merged_image, screenshots[i])
+    merged_image = cropped_images[0]
+    for new_img in cropped_images[1:]:
+        merged_image = ImageMerger.merge_images_vertically(
+            merged_image, new_img, threshold=0.5
+        )
         if merged_image is None:
-            logger.warning(f"Failed to merge screenshot {i+1}. Skipping.")
+            logger.warning(f"Failed to merge screenshot. Skipping.")
 
     if merged_image is not None:
         if Config["DEBUG_MODE"]:
@@ -98,8 +107,9 @@ def main():
             merged_image.save(os.path.join(temp_dir, "merged_screenshot.png"))
 
         logger.info("Copying merged image to clipboard...")
-        app.ExitMainLoop()
-        ClipboardManager.copy_image_to_clipboard(merged_image)
+        # app.ExitMainLoop()
+        merged_image.show()
+        # ClipboardManager.copy_image_to_clipboard(merged_image)
     else:
         logger.error("No screenshots were taken, nothing to copy to clipboard.")
 
