@@ -1,90 +1,99 @@
-
-# Check Operating System
-import os
-import platform
-import re
-import shlex
-import subprocess
 import sys
-import utils
+from fastapi import background
 from loguru import logger
-
-OS_NAME = platform.system()
 
 class RegionSelector:
     @staticmethod
     def select_region():
-        if OS_NAME == 'Windows':
-            return RegionSelector._select_region_windows()
-        elif OS_NAME == 'Linux':
-            # Verify if DISPLAY is set to ensure X11 session
-            if os.environ.get('DISPLAY') is None:
-                logger.error("DISPLAY environment variable not set. Ensure you are running an X11 session.")
-                sys.exit(1)
-            return RegionSelector._select_region_linux()
-        else:
-            logger.error(f"Unsupported Operating System: {OS_NAME}")
-            sys.exit(1)
+        return RegionSelector._select_region_wx()
 
     @staticmethod
-    def _select_region_windows():
-        import tkinter as tk
+    def _select_region_wx():
+        try:
+            import wx
+        except ImportError:
+            logger.error("wxPython is not installed. Please install wxPython using pip.")
+            sys.exit(1)
 
-        root = tk.Tk()
-        root.attributes('-fullscreen', True)
-        root.attributes('-alpha', 0.3)  # Transparency
-        root.attributes('-topmost', True)
-        root.config(cursor="cross")
+        selection = {}
 
-        start_x = start_y = end_x = end_y = 0
-        selection = None
+        class SelectionFrame(wx.Frame):
+            def __init__(self):
+                display_count = wx.Display.GetCount()
+                total_rect = wx.Rect()
+                for d in range(display_count):
+                    display = wx.Display(d)
+                    rect = display.GetClientArea()
+                    total_rect.Union(rect)
+                # self.ShowFullScreen(False)
 
-        # Create a canvas to draw the selection rectangle
-        canvas = tk.Canvas(root, cursor="cross", bg="grey")
-        canvas.pack(fill=tk.BOTH, expand=True)
+                super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT )
+                self.SetPosition(total_rect.GetPosition())
+                self.SetCursor(wx.Cursor(wx.CURSOR_CROSS))
+                self.SetBackgroundColour(wx.Colour(0,0,0,10))
+                self.SetOwnBackgroundColour(wx.Colour(0,0,0,10))
+                self.SetForegroundColour(wx.Colour(0,0,0,10))
+                self.SetOwnForegroundColour(wx.Colour(0,0,0,10))
+                self.SetTransparent(30)  # Adjust transparency level
 
-        def on_mouse_down(event):
-            nonlocal start_x, start_y
-            start_x, start_y = event.x, event.y
-            canvas.delete("sel_rect")
-            canvas.create_rectangle(start_x, start_y, start_x, start_y, outline='red', width=2, tags="sel_rect")
+                self.Bind(wx.EVT_LEFT_DOWN, self.OnLeftDown)
+                self.Bind(wx.EVT_MOTION, self.OnMouseMove)
+                self.Bind(wx.EVT_LEFT_UP, self.OnLeftUp)
+                self.Bind(wx.EVT_PAINT, self.OnPaint)
+                self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
 
-        def on_mouse_move(event):
-            nonlocal start_x, start_y, end_x, end_y
-            end_x, end_y = event.x, event.y
-            canvas.coords("sel_rect", start_x, start_y, end_x, end_y)
+                self.start_pos = None
+                self.end_pos = None
+                # self.SetSize(display_size)
+                # self.SetPosition((0, 0))
+                self.ShowFullScreen(True)
 
-        def on_mouse_up(event):
-            nonlocal start_x, start_y, end_x, end_y, selection
-            end_x, end_y = event.x, event.y
-            root.destroy()
-            x = min(start_x, end_x)
-            y = min(start_y, end_y)
-            w = abs(end_x - start_x)
-            h = abs(end_y - start_y)
-            selection = {'top': y, 'left': x, 'width': w, 'height': h}
+            def OnLeftDown(self, event):
+                self.start_pos = event.GetPosition()
+                self.end_pos = self.start_pos
+                self.CaptureMouse()
 
-        # Bind mouse events
-        canvas.bind("<ButtonPress-1>", on_mouse_down)
-        canvas.bind("<B1-Motion>", on_mouse_move)
-        canvas.bind("<ButtonRelease-1>", on_mouse_up)
+            def OnMouseMove(self, event):
+                if self.HasCapture():
+                    self.end_pos = event.GetPosition()
+                    self.Refresh()
 
-        root.mainloop()
+            def OnLeftUp(self, event):
+                if self.HasCapture():
+                    self.ReleaseMouse()
+                self.end_pos = event.GetPosition()
+                self.CaptureSelection()
+                self.Close()
+
+            def OnPaint(self, event):
+                if self.start_pos and self.end_pos:
+                    dc = wx.PaintDC(self)
+                    dc.SetPen(wx.Pen(wx.RED, 5))
+                    dc.SetBrush(wx.RED_BRUSH)
+                    rect = wx.Rect(self.start_pos, self.end_pos)
+                    dc.DrawRectangle(rect)
+
+            def OnEraseBackground(self, event):
+                pass  # Prevent flickering
+
+            def CaptureSelection(self):
+                left = min(self.start_pos.x, self.end_pos.x)
+                top = min(self.start_pos.y, self.end_pos.y)
+                width = abs(self.start_pos.x - self.end_pos.x)
+                height = abs(self.start_pos.y - self.end_pos.y)
+                selection['left'] = left
+                selection['top'] = top
+                selection['width'] = width
+                selection['height'] = height
+
+        app = wx.App(False, useBestVisual=True)
+        frame = SelectionFrame()
+        frame.Show()
+        app.MainLoop()
+
         return selection
 
-    @staticmethod
-    def _select_region_linux():
-        try:
-            result = subprocess.run(shlex.split('import -format "%wx%h%X%Y\n" info:'), capture_output=True, text=True, check=True)
-            geometry = result.stdout.strip()
-            if not geometry:
-                raise ValueError("No geometry received from import.")
-            w, h, l, t = tuple(map(int, re.findall(r'\d+', geometry)))
-            selection = {'left': l, 'top': t, 'width': w, 'height': h}
-            return selection
-        except FileNotFoundError:
-            logger.error("`import` is not available. Please install imagemagick using your package manager (e.g., sudo apt-get install imagemagick).")
-            sys.exit(1)
-        except Exception as e:
-            logger.exception(f"Unexpected error during region selection: {e}")
-            sys.exit(1)
+if __name__ == '__main__':
+    selector = RegionSelector()
+    region = selector.select_region()
+    print(f"Selected region: {region}")

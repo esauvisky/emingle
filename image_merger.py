@@ -18,16 +18,16 @@ class ImageMerger:
     def find_fixed_borders(images, margin=0.2):
         rgb_arrays = [np.array(img) for img in images]
 
-        # Display grid of images
-        grid_size = int(sqrt(len(images)))
-        fig, axs = plt.subplots(2, len(images)//2, figsize=(25, 10))
-        for i, img in enumerate(images[:len(images)//2*2]):
-            axs[i%2][i//2].clear()
-            axs[i%2][i//2].imshow(img)
-            axs[i%2][i//2].axis('off')
-        plt.show()
+        # # Display grid of images
+        # grid_size = int(sqrt(len(images)))
+        # fig, axs = plt.subplots(2, len(images)//2, figsize=(25, 10))
+        # for i, img in enumerate(images[:len(images)//2*2]):
+        #     axs[i%2][i//2].clear()
+        #     axs[i%2][i//2].imshow(img)
+        #     axs[i%2][i//2].axis('off')
+        # plt.show()
 
-        input("Press Enter to continue...")
+        # input("Press Enter to continue...")
 
         top, bottom, left, right = 0, rgb_arrays[0].shape[0], 0, rgb_arrays[0].shape[1]
 
