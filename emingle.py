@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from loguru import logger
+from matplotlib import pyplot as plt
 import numpy as np
 from utils import setup_logging, Config
 
 setup_logging("DEBUG", {"function": True, "thread": True})
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from image_merger import ImageMerger
 from clipboard_manager import ClipboardManager
@@ -54,7 +57,7 @@ def main():
     keyboard_listener = KeyboardListener()
     keyboard_listener.start()
 
-    mouse_listener = MouseScrollListener()
+    mouse_listener = MouseScrollListener(keyboard_listener)
     mouse_listener.start()
 
     logger.info("\nInstructions:\n"
