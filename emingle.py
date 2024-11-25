@@ -43,8 +43,8 @@ def main():
         logger.error("No region selected. Exiting.")
         sys.exit(0)
 
+    time.sleep(0.1)
     logger.info(f"Selected region: {selection}")
-
     keyboard_listener = KeyboardListener()
     keyboard_listener.start()
 
@@ -71,11 +71,11 @@ def main():
     logger.info("Merging screenshots...")
 
     # Start with the first image as the base
-    top, bottom, left, right = ImageMerger.find_fixed_borders(screenshots)
-    logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
-    logger.info(f"Top: {top}, Bottom: {bottom}, Left: {left}, Right: {right}")
-    screenshots = [ImageMerger.remove_borders(np.array(img), top, bottom, left, right) for img in screenshots]
-    screenshots = [Image.fromarray(img) for img in screenshots]
+    # top, bottom, left, right = ImageMerger.find_fixed_borders(screenshots)
+    # logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
+    # logger.info(f"Top: {top}, Bottom: {bottom}, Left: {left}, Right: {right}")
+    # screenshots = [ImageMerger.remove_borders(np.array(img), top, bottom, left, right) for img in screenshots]
+    # screenshots = [Image.fromarray(img) for img in screenshots]
     merged_image = screenshots[0] if screenshots else None
     logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
     for i in range(1, len(screenshots)):
