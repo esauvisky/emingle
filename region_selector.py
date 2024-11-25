@@ -1,3 +1,4 @@
+import time
 import wx
 
 class RegionSelector:
@@ -73,6 +74,7 @@ class RegionSelector:
         frame.Show()
         app.MainLoop()
 
+        time.sleep(0.5)
         return selection
 
 
