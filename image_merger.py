@@ -1,9 +1,11 @@
 import filecmp
 import glob
 from math import sqrt
+from scipy.signal import fftconvolve
 import os
 import random
 import time
+from skimage.feature import match_template
 
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -75,6 +77,9 @@ class ImageMerger:
         # Combine shifts prioritizing early and delayed shifts, then check remaining
         for shift in range(-height_new + 1 + margin, height_base - margin):
         # for shift in offsets:
+            if not ((shift < 0) or (shift >= height_base - height_new)):
+                continue
+
             if shift >= 0:
                 # Overlapping regions
                 overlap_height = min(height_base - shift, height_new)
@@ -210,10 +215,11 @@ class ImageMerger:
                 overlap_start_in_base = shift
                 overlap_end_in_base = shift + overlap_height
 
-                base_overlap = base_array[overlap_start_in_base:overlap_end_in_base]
+                # base_overlap = base_array[overlap_start_in_base:overlap_end_in_base]
                 new_overlap = new_array[:overlap_height]
+                blended_overlap = new_overlap
 
-                blended_overlap = ImageMerger.blend_overlap(base_overlap, new_overlap)
+                # blended_overlap = ImageMerger.blend_overlap(base_overlap, new_overlap)
 
                 # Add the part of the base image before the overlapping region
                 if shift > 0:
@@ -331,7 +337,7 @@ if __name__ == "__main__":
             logger.info(f"Images dimensions: {[img.size for img in image_files_objs]}")
             base_img = image_files_objs[0]
             for new_img in image_files_objs[1:]:
-                base_img = ImageMerger.merge_images_vertically(base_img, new_img, threshold=0.5)
+                base_img = ImageMerger.merge_images_vertically(base_img, new_img, threshold=0.1)
 
             # Save the merged image temporarily
             merged_temp_path = os.path.join(subdir_path, "merged_temp.png")
