@@ -78,32 +78,46 @@ class RegionSelector:
 
     @staticmethod
     def highlight_region(left, top, width, height):
+        app = wx.App(False, useBestVisual=True)
+
         class HighlightFrame(wx.Frame):
             def __init__(self, left, top, width, height):
-                super().__init__(None, title="Highlight Region", size=(width, height), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT | wx.FRAME_SHAPED)
-                self.SetPosition((left, top))
-                self.SetTransparent(50)  # Adjusting transparency for highlighting
+                display_count = wx.Display.GetCount()
+                total_rect = wx.Rect()
+                for d in range(display_count):
+                    display = wx.Display(d)
+                    rect = display.GetClientArea()
+                    total_rect.Union(rect)
+
+                super().__init__(None, title="Highlight Region", size=(0,0), pos=(0,0), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT | wx.FRAME_SHAPED)
+                self.SetSize(total_rect.GetSize())
+                self.SetPosition(total_rect.GetPosition())
+                self.SetTransparent(20)  # Adjusting transparency for highlighting
                 self.Bind(wx.EVT_PAINT, self.OnPaint)
 
+                self.highlight_rect = wx.Rect(left, top, width, height)
+                self.total_rect = total_rect
+
             def OnPaint(self, event):
+                # region = wx.Region(bmp, wx.TransparentColour)
+                outer_region = wx.Region(self.total_rect)
+                highlight_region = wx.Region(self.highlight_rect)
+                outer_region.Subtract(highlight_region)
                 dc = wx.PaintDC(self)
                 dc.SetBrush(wx.RED_BRUSH)  # Transparent brush
-                dc.DrawRectangle(0, 0, width, height)
-                # region = wx.Region(bmp, wx.TransparentColour)
-                region = wx.Region(left, top, width, height)
-                self.SetShape(region)
+                dc.DrawRectangle(outer_region.GetBox())
+                self.SetShape(outer_region)
                 self.ShowFullScreen(True)
 
-        app = wx.App(False, useBestVisual=True)
         frame = HighlightFrame(left, top, width, height)
-        frame.Disable()
         frame.Show()
-        frame.Enable()
-        app.MainLoop()
+        return app
+
 
 
 if __name__ == '__main__':
     selector = RegionSelector()
     region = selector.select_region()
     print(f"Selected region: {region}")
-    selector.highlight_region(region['left'], region['top'], region['width'], region['height'])
+    app = selector.highlight_region(region['left'], region['top'], region['width'], region['height'])
+    app.MainLoop()
