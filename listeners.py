@@ -27,11 +27,12 @@ class KeyboardListener:
             pass
 
 class MouseScrollListener:
-    def __init__(self):
+    def __init__(self, keyboard_listener):
         self.screenshot_event = False
         self.exit_event = False
         self.scroll_count = 0
-        self.scroll_threshold = 3  # Number of scrolls before triggering screenshot
+        self.scroll_threshold = 4  # Number of scrolls before triggering screenshot
+        self.keyboard_listener = keyboard_listener
 
     def start(self):
         listener_thread = Thread(target=self._listen_mouse, daemon=True)
@@ -43,7 +44,7 @@ class MouseScrollListener:
             listener.join()
 
     def _on_scroll(self, x, y, dx, dy):
-        if self.exit_event:
+        if self.exit_event or self.keyboard_listener.exit_event:
             return False
         self.scroll_count += 1
         logger.debug(f"Mouse scrolled: count={self.scroll_count}")
