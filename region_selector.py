@@ -1,20 +1,8 @@
-import sys
-from fastapi import background
-from loguru import logger
+import wx
 
 class RegionSelector:
     @staticmethod
     def select_region():
-        return RegionSelector._select_region_wx()
-
-    @staticmethod
-    def _select_region_wx():
-        try:
-            import wx
-        except ImportError:
-            logger.error("wxPython is not installed. Please install wxPython using pip.")
-            sys.exit(1)
-
         selection = {}
 
         class SelectionFrame(wx.Frame):
@@ -30,10 +18,6 @@ class RegionSelector:
                 super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT )
                 self.SetPosition(total_rect.GetPosition())
                 self.SetCursor(wx.Cursor(wx.CURSOR_CROSS))
-                self.SetBackgroundColour(wx.Colour(0,0,0,10))
-                self.SetOwnBackgroundColour(wx.Colour(0,0,0,10))
-                self.SetForegroundColour(wx.Colour(0,0,0,10))
-                self.SetOwnForegroundColour(wx.Colour(0,0,0,10))
                 self.SetTransparent(30)  # Adjust transparency level
 
                 self.Bind(wx.EVT_LEFT_DOWN, self.OnLeftDown)
@@ -44,8 +28,6 @@ class RegionSelector:
 
                 self.start_pos = None
                 self.end_pos = None
-                # self.SetSize(display_size)
-                # self.SetPosition((0, 0))
                 self.ShowFullScreen(True)
 
             def OnLeftDown(self, event):
@@ -93,7 +75,35 @@ class RegionSelector:
 
         return selection
 
+
+    @staticmethod
+    def highlight_region(left, top, width, height):
+        class HighlightFrame(wx.Frame):
+            def __init__(self, left, top, width, height):
+                super().__init__(None, title="Highlight Region", size=(width, height), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT | wx.FRAME_SHAPED)
+                self.SetPosition((left, top))
+                self.SetTransparent(50)  # Adjusting transparency for highlighting
+                self.Bind(wx.EVT_PAINT, self.OnPaint)
+
+            def OnPaint(self, event):
+                dc = wx.PaintDC(self)
+                dc.SetBrush(wx.RED_BRUSH)  # Transparent brush
+                dc.DrawRectangle(0, 0, width, height)
+                # region = wx.Region(bmp, wx.TransparentColour)
+                region = wx.Region(left, top, width, height)
+                self.SetShape(region)
+                self.ShowFullScreen(True)
+
+        app = wx.App(False, useBestVisual=True)
+        frame = HighlightFrame(left, top, width, height)
+        frame.Disable()
+        frame.Show()
+        frame.Enable()
+        app.MainLoop()
+
+
 if __name__ == '__main__':
     selector = RegionSelector()
     region = selector.select_region()
     print(f"Selected region: {region}")
+    selector.highlight_region(region['left'], region['top'], region['width'], region['height'])
