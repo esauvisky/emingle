@@ -1,0 +1,11 @@
+loguru
+matplotlib
+numpy
+pyperclip
+scipy
+scikit-image
+pillow
+mss
+PyQt5==5.15.11
+pynput==1.7.7
+wxPython==4.2.2

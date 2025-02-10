@@ -6,7 +6,7 @@ from utils import setup_logging, Config
 
 setup_logging("DEBUG", {"function": True, "thread": True})
 import os
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from image_merger import ImageMerger
 from clipboard_manager import ClipboardManager
@@ -108,11 +108,11 @@ def main():
             for i, screenshot in enumerate(screenshots):
                 screenshot.save(os.path.join(temp_dir, f"screenshot_{i}.png"))
             merged_image.save(os.path.join(temp_dir, "merged_screenshot.png"))
+            merged_image.show()
 
         logger.info("Copying merged image to clipboard...")
         # app.ExitMainLoop()
-        merged_image.show()
-        # ClipboardManager.copy_image_to_clipboard(merged_image)
+        ClipboardManager.copy_image_to_clipboard(merged_image)
     else:
         logger.error("No screenshots were taken, nothing to copy to clipboard.")
 
