@@ -1,7 +1,10 @@
 import filecmp
 import glob
+import itertools
 from math import sqrt
 from scipy.signal import fftconvolve
+from skimage.metrics import structural_similarity as ssim
+from scipy.ndimage import sobel
 import os
 import random
 import time
@@ -48,11 +51,14 @@ class ImageMerger:
 
     @staticmethod
     def find_image_overlap(base_array_gray, new_array_gray, threshold=0.8, z_score_threshold=2.0):
+        from skimage.metrics import structural_similarity as ssim
+        from scipy.ndimage import sobel
+
         height_base, width = base_array_gray.shape
         height_new, _ = new_array_gray.shape
 
         best_shift = None
-        best_score = np.inf  # Initialize with a large value
+        best_score = 0  # Initialize with a low value (we'll maximize instead of minimize)
         best_zscore = 0
 
         fig = None
@@ -61,34 +67,33 @@ class ImageMerger:
             fig, axs = plt.subplots(1, 3, figsize=(10, 8))  # Create three subplots side by side
 
         shifts = []
-        best_scores = []
+        scores = []
         zscores = []
 
-        # Define the range for early shifts and delayed shifts
-        margin = height_new // 10
-        # first_list = list(range(-height_new + 1 + margin, height_base // 2))
-        # second_list = list(range(height_base - margin, height_base // 2, -1))
-        # offsets = []
-        # for x, y in zip(first_list, second_list):
-        #     offsets.append(x)
-        #     offsets.append(y)
-        # offsets.extend(list(range(0, height_base - height_new + 1)))
+        # We're not using edge detection anymore since we're only using SSIM
 
-        # Combine shifts prioritizing early and delayed shifts, then check remaining
-        for shift in range(-height_new + 1 + margin, height_base - margin):
-        # for shift in offsets:
-            if not ((shift < 0) or (shift >= height_base - height_new)):
-                continue
+        # Define the range for shifts with a reasonable margin
+        margin = 5
 
+        # Prioritize checking shifts where we expect overlaps
+        # First check negative shifts (new image above base image)
+        # Then check positive shifts (new image below base image)
+        shift_ranges = [
+            range(-height_new + 1 + margin, 0),  # Negative shifts
+            range(height_base - margin, 0, -1)       # Positive shifts
+        ]
+        shift_range = [val for pair in zip(*shift_ranges) for val in pair]
+
+        for shift in shift_range:
             if shift >= 0:
-                # Overlapping regions
+                # Overlapping regions (new image below base image)
                 overlap_height = min(height_base - shift, height_new)
                 if overlap_height <= 0:
                     continue
                 base_overlap = base_array_gray[shift:shift + overlap_height, :]
                 new_overlap = new_array_gray[:overlap_height, :]
             else:
-                # Negative shift: new image is shifted down
+                # Negative shift: new image above base image
                 overlap_height = min(height_new + shift, height_base)
                 if overlap_height <= 0:
                     continue
@@ -99,92 +104,89 @@ class ImageMerger:
             if base_overlap.shape != new_overlap.shape:
                 continue
 
-            # Compute Sum of Absolute Differences
-            sad = np.sum(np.abs(base_overlap - new_overlap))
+            # # Skip if overlap is too small
+            if overlap_height < 7:
+                continue
 
-            # Normalize SAD by the number of pixels and maximum pixel value
-            sad_normalized = sad / (overlap_height * width * 255)
+            # Calculate SSIM for structural similarity (ranges from -1 to 1, higher is better)
+            ssim_score = ssim(base_overlap, new_overlap, data_range=255)
 
-            match_percentage = 1 - sad_normalized
+            # Use SSIM score directly as our combined score
+            combined_score = ssim_score
+
             shifts.append(shift)
+            scores.append(combined_score)
 
-            # Calculate mean and standard deviation of match percentages
-            best_scores.append(match_percentage)
-            mean_match = np.mean(best_scores)
-            std_match = np.std(best_scores)
+            # Calculate z-score if we have enough data points
+            if len(scores) >= 5:
+                mean_score = np.mean(scores)
+                std_score = np.std(scores)
+                z_score = (combined_score - mean_score) / (std_score + 1e-8)
+                zscores.append(z_score)
+            else:
+                z_score = 0
+                zscores.append(0)
 
-            # Determine if there is an outlier (a spike in match percentage)
-            z_score = abs((match_percentage - mean_match) / std_match) if std_match > 0 else 0
-            zscores.append(z_score)
-
-            if sad_normalized < best_score:# and z_score > 2:
-                best_zscore = z_score
-                best_score = sad_normalized
+            # Update best score
+            if combined_score > best_score:
+                best_score = combined_score
                 best_shift = shift
+                best_zscore = z_score
 
-                # if z_score > z_score_threshold:
-                #     logger.info(f"Spike detected: Match percentage at shift {shift} is {match_percentage:.8%} with Z-score {z_score:.2f}. Returning early.")
-                #     return shift, match_percentage
-                # else:
-                #     logger.debug(f"Match percentage at shift {shift} is {match_percentage:.8%} with Z-score {z_score:.2f}.")
-            # else:
-            #     zscores.append(0)
+                # Early termination if we find an exceptionally good match
+                if combined_score > 0.95 and z_score > 2.0:
+                    logger.info(f"Excellent match found at shift {shift} with score {combined_score:.4f} and z-score {z_score:.2f}")
+                    return shift, combined_score, z_score
 
-            # Visualization every 20 shifts
-            if Config["DEBUG_MODE"] and abs(shift) % 200 == 0:
-                overlap_size_percentage = overlap_height / height_new  # Normalize overlap size
+            # Visualization for debugging
+            if Config["DEBUG_MODE"] and (len(shifts) % 50 == 0 or combined_score > 0.9):
+                overlap_size_percentage = overlap_height / height_new
 
                 plt.suptitle(f"Shift: {shift}\n"
-                             f"Overlap Size Percentage: {overlap_size_percentage:.0%}\n"
-                             f"Match Percentage: {match_percentage:.8%}\n"
-                             f"Z-score: {z_score:.2f}")
+                            f"Overlap Size: {overlap_size_percentage:.0%}\n"
+                            f"Combined Score: {combined_score:.4f}\n"
+                            f"Z-score: {z_score:.2f}")
 
-                # Logging for debugging
-                logger.debug(f"Shift: {shift}. Overlapping height: {overlap_height}, "
-                             f"Match Percentage: {match_percentage:.8%}. Z-score: {z_score:.2f}.")
+                logger.debug(f"Shift: {shift}. Overlap height: {overlap_height}, "
+                            f"Combined Score: {combined_score:.4f}, Z-score: {z_score:.2f}")
 
-                axs[0].clear()
-                axs[1].clear()
-                axs[2].clear()
+                if len(axs) >= 3:
+                    axs[0].clear()
+                    axs[1].clear()
+                    axs[2].clear()
 
-                # Display the overlapping regions side by side
-                axs[0].imshow(base_overlap, cmap='gray')
-                axs[0].set_title("Base Overlap")
-                axs[0].axis('off')
+                    # Display the overlapping regions side by side
+                    axs[0].imshow(base_overlap, cmap='gray')
+                    axs[0].set_title("Base Overlap")
+                    axs[0].axis('off')
 
-                axs[1].imshow(new_overlap, cmap='gray')
-                axs[1].set_title("New Overlap")
-                axs[1].axis('off')
+                    axs[1].imshow(new_overlap, cmap='gray')
+                    axs[1].set_title("New Overlap")
+                    axs[1].axis('off')
 
-                # Plot match percentage against shift
-                # axs[2].plot(shifts, match_percentages, label='Match %', color='blue')
-                axs[2].set_title("Match Percentage vs. Shift")
-                axs[2].set_xlabel("Shift")
-                axs[2].set_ylabel("Match Percentage")
-                axs[2].scatter(shifts, best_scores, color='red')
-                # plot zscores
-                #  set small size and separate y scale
-                # axs[2].scatter(shifts, zscores, color='green')
-                # # axs[2].set_yscale('log')
-                # axs[2].set_ylim(0, 1)
-                # axs[2].set_xlim(-height_new + 1, height_base - height_new)
-                # axs[2].set_title("Match Percentage vs. Shift")
-                # axs[2].set_xlabel("Shift")
-                # axs[2].set_ylabel("Match Percentage")
+                    # Plot scores against shifts
+                    axs[2].set_title("Scores vs. Shift")
+                    axs[2].set_xlabel("Shift")
+                    axs[2].set_ylabel("Score")
+                    axs[2].scatter(shifts, scores, color='blue', alpha=0.5, s=5)
+                    axs[2].scatter(best_shift, best_score, color='red', s=50)
 
-                plt.draw()
-                plt.pause(0.00001)  # Adjust pause duration as needed
+                    plt.draw()
+                    plt.pause(0.00001)
 
-        plt.close()
+        if Config["DEBUG_MODE"] and fig is not None:
+            plt.close(fig)
 
-        match_score = 1 - best_score
-        if match_score >= threshold:
-            return best_shift, match_score, best_zscore
-        return None, match_score, best_zscore
+        logger.info(f"Best match: shift={best_shift}, score={best_score:.4f}, z-score={best_zscore:.2f}")
+
+        # Return the best shift if it meets the threshold
+        if best_score >= threshold and best_zscore > z_score_threshold:
+            return best_shift, best_score, best_zscore
+        return None, best_score, best_zscore
 
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img, threshold=0.8):
+    def merge_images_vertically(base_img, new_img, threshold=0.6):
         # Convert images to grayscale
         base_array_gray = np.array(base_img.convert('L'))
         new_array_gray = np.array(new_img.convert('L'))
