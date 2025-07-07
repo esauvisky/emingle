@@ -52,6 +52,53 @@ class ImageMerger:
         return array[top:bottom, left:right]
 
     @staticmethod
+    def find_fixed_borders(images, margin=2):
+        """
+        Identifies the top and bottom rows that are consistent across all images.
+        Left and right borders are considered part of the content and are not cropped.
+        """
+        rgb_arrays = [np.array(img) for img in images]
+
+        top, bottom = 0, rgb_arrays[0].shape[0]
+        width = rgb_arrays[0].shape[1] # Keep full width
+
+        # Find top fixed border
+        for i in range(rgb_arrays[0].shape[0]):
+            is_fixed_row = True
+            for array in rgb_arrays[1:]: # Compare against the first image
+                if not np.allclose(array[i, :, :], rgb_arrays[0][i, :, :], rtol=margin):
+                    is_fixed_row = False
+                    break
+            if not is_fixed_row:
+                top = i
+                break
+
+        # Find bottom fixed border
+        for i in range(rgb_arrays[0].shape[0] - 1, -1, -1):
+            is_fixed_row = True
+            for array in rgb_arrays[1:]: # Compare against the first image
+                if not np.allclose(array[i, :, :], rgb_arrays[0][i, :, :], rtol=margin):
+                    is_fixed_row = False
+                    break
+            if not is_fixed_row:
+                bottom = i + 1
+                break
+        
+        # Ensure bottom is not less than top, and within bounds
+        bottom = max(top, bottom)
+        bottom = min(bottom, rgb_arrays[0].shape[0])
+
+        return top, bottom, 0, width # Always return 0 and width for left/right
+
+    @staticmethod
+    def remove_borders(array, top, bottom, left, right):
+        """
+        Removes only top and bottom borders, preserving full width.
+        The 'left' and 'right' parameters are ignored for actual slicing.
+        """
+        return array[top:bottom, :]
+
+    @staticmethod
     def _downsample_array(array, factor):
         """Downsample a NumPy array using PIL for resizing."""
         if factor == 1:
@@ -410,6 +457,74 @@ class ImageMerger:
             if Config["DEBUG_MODE"]:
                 visualize(base_img)
             return base_img
+
+    @staticmethod
+    @staticmethod
+    def add_borders_back(cropped_merged_image, original_first_screenshot_array, top_border_height, left_border_width, right_border_width, original_bottom_index):
+        """
+        Adds the fixed borders back to a merged, cropped image.
+        Args:
+            cropped_merged_image (PIL.Image): The merged image without fixed borders.
+            original_first_screenshot_array (np.array): The NumPy array of the very first original screenshot (full image).
+            top_border_height (int): The height of the fixed top border (from find_fixed_borders 'top' value).
+            left_border_width (int): The width of the fixed left border (from find_fixed_borders 'left' value).
+            right_border_width (int): The width of the fixed right border (calculated as original_width - 'right' value).
+            original_bottom_index (int): The row index (exclusive) of the end of the common content area
+                                        in the original screenshot (from find_fixed_borders 'bottom' value).
+        Returns:
+            PIL.Image: The final merged image with fixed borders re-added.
+        """
+        cropped_merged_array = np.array(cropped_merged_image)
+        merged_height, merged_width, channels = cropped_merged_array.shape
+
+        original_width_src = original_first_screenshot_array.shape[1]
+
+        final_width = left_border_width + merged_width + right_border_width
+        final_height = top_border_height + merged_height
+
+        final_array = np.zeros((final_height, final_width, channels), dtype=np.uint8)
+
+        # 1. Place the top border
+        if top_border_height > 0:
+            # Copy the top_border_height rows from the original first screenshot
+            # The width of the copied segment should be the full final_width (which equals original_width_src)
+            final_array[0:top_border_height, 0:final_width] = original_first_screenshot_array[0:top_border_height, 0:final_width]
+
+        # 2. Place the merged (cropped) content
+        final_array[top_border_height : top_border_height + merged_height,
+                    left_border_width : left_border_width + merged_width] = cropped_merged_array
+
+        # 3. Place left border
+        if left_border_width > 0:
+            # Get a sample strip of the left border from the original image's content area
+            # This strip will be tiled vertically to cover the entire merged height.
+            left_border_sample = original_first_screenshot_array[
+                top_border_height:original_bottom_index,
+                0:left_border_width
+            ]
+            if left_border_sample.shape[0] > 0:
+                tiled_left_border = np.tile(left_border_sample, (int(np.ceil(merged_height / left_border_sample.shape[0])), 1, 1))
+                tiled_left_border = tiled_left_border[:merged_height, :, :]
+                final_array[top_border_height : top_border_height + merged_height, 0 : left_border_width] = tiled_left_border
+            else:
+                logger.warning("Left border sample is empty, cannot add left border.")
+
+        # 4. Place right border
+        if right_border_width > 0:
+            # Get a sample strip of the right border from the original image's content area
+            right_border_sample = original_first_screenshot_array[
+                top_border_height:original_bottom_index,
+                original_width_src - right_border_width : original_width_src
+            ]
+            if right_border_sample.shape[0] > 0:
+                tiled_right_border = np.tile(right_border_sample, (int(np.ceil(merged_height / right_border_sample.shape[0])), 1, 1))
+                tiled_right_border = tiled_right_border[:merged_height, :, :]
+                final_array[top_border_height : top_border_height + merged_height,
+                            left_border_width + merged_width : final_width] = tiled_right_border
+            else:
+                logger.warning("Right border sample is empty, cannot add right border.")
+
+        return Image.fromarray(final_array)
 
     @staticmethod
     def blend_overlap(base_overlap, new_overlap):
