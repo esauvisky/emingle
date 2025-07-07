@@ -52,34 +52,42 @@ class ImageMerger:
         return array[top:bottom, left:right]
 
     @staticmethod
-    def _process_shift_chunk(base_array_gray, new_array_gray, shift_chunk, threshold, z_score_threshold):
-        """Process a chunk of shifts in a separate process"""
+    def _downsample_array(array, factor):
+        """Downsample a NumPy array using PIL for resizing."""
+        if factor == 1:
+            return array
+        height, width = array.shape
+        new_height, new_width = height // factor, width // factor
+        img = Image.fromarray(array)
+        img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        return np.array(img_resized)
+
+    @staticmethod
+    def _process_shift_chunk(base_array_gray, new_array_gray, shift_chunk):
+        """Process a chunk of shifts in a separate process to find best SSIM score."""
         from skimage.metrics import structural_similarity as ssim
 
         height_base, width = base_array_gray.shape
         height_new, _ = new_array_gray.shape
 
         best_shift = None
-        best_score = 0
-        best_zscore = 0
+        best_score = -1.0 # Initialize with lowest possible SSIM score
 
-        shifts = []
-        scores = []
-        zscores = []
+        results_in_chunk = [] # Store all (shift, score) pairs from this chunk
 
         for shift in shift_chunk:
             if shift >= 0:
                 # Overlapping regions (new image below base image)
                 overlap_height = min(height_base - shift, height_new)
-                if overlap_height <= 0:
-                    continue
+                # base_overlap: from 'shift' downwards in base_array_gray
+                # new_overlap: from top (0) downwards in new_array_gray
                 base_overlap = base_array_gray[shift:shift + overlap_height, :]
                 new_overlap = new_array_gray[:overlap_height, :]
             else:
                 # Negative shift: new image above base image
                 overlap_height = min(height_new + shift, height_base)
-                if overlap_height <= 0:
-                    continue
+                # base_overlap: from top (0) downwards in base_array_gray
+                # new_overlap: from '-shift' downwards in new_array_gray
                 base_overlap = base_array_gray[:overlap_height, :]
                 new_overlap = new_array_gray[-shift:-shift + overlap_height, :]
 
@@ -87,114 +95,211 @@ class ImageMerger:
             if base_overlap.shape != new_overlap.shape:
                 continue
 
-            # Skip if overlap is too small
+            # Skip if overlap is too small (needs at least 7 pixels for SSIM to be meaningful)
             if overlap_height < 7:
                 continue
 
             # Calculate SSIM for structural similarity
             ssim_score = ssim(base_overlap, new_overlap, data_range=255)
-            combined_score = ssim_score
 
-            shifts.append(shift)
-            scores.append(combined_score)
+            # Early termination if we find an exceptionally good match (e.g., almost perfect)
+            if ssim_score > 0.995: # Very high score, likely the match.
+                return (shift, ssim_score), True # Return (shift, score) tuple and True for early termination
 
-            # Calculate z-score if we have enough data points
-            if len(scores) >= 5:
-                mean_score = np.mean(scores)
-                std_score = np.std(scores)
-                z_score = (combined_score - mean_score) / (std_score + 1e-8)
-                zscores.append(z_score)
-            else:
-                z_score = 0
-                zscores.append(0)
+            results_in_chunk.append((shift, ssim_score))
 
-            # Update best score
-            if combined_score > best_score:
-                best_score = combined_score
+            if ssim_score > best_score:
+                best_score = ssim_score
                 best_shift = shift
-                best_zscore = z_score
 
-                # Early termination if we find an exceptionally good match
-                if combined_score > 0.95 and z_score > 2.0:
-                    return shift, combined_score, z_score, True  # True indicates early termination
-
-        # Return the best shift if it meets the threshold
-        if best_score >= threshold and best_zscore > z_score_threshold:
-            return best_shift, best_score, best_zscore, False  # False indicates normal completion
-        return None, best_score, best_zscore, False
+        # Return all results from this chunk, and False for early termination
+        return results_in_chunk, False
 
     @staticmethod
     def find_image_overlap(base_array_gray, new_array_gray, threshold=0.8, z_score_threshold=2.0):
-        from skimage.metrics import structural_similarity as ssim
-        from scipy.ndimage import sobel
-
         height_base, width = base_array_gray.shape
         height_new, _ = new_array_gray.shape
+
+        # Minimum valid overlap height for SSIM calculation
+        min_overlap_height = 7
 
         fig = None
         axs = []
         if Config["DEBUG_MODE"]:
             fig, axs = plt.subplots(1, 3, figsize=(10, 8))  # Create three subplots side by side
 
-        # Define the range for shifts with a reasonable margin
-        margin = 5
-
-        # Prioritize checking shifts where we expect overlaps
-        # First check negative shifts (new image above base image)
-        # Then check positive shifts (new image below base image)
-        shift_ranges = [
-            range(-height_new + 1 + margin, 0),  # Negative shifts
-            range(height_base - margin, 0, -1)   # Positive shifts
-        ]
-        shift_range = [val for pair in zip(*shift_ranges) for val in pair]
-
-        # Determine number of processes to use (half of CPU cores)
         num_processes = max(1, multiprocessing.cpu_count() // 2)
         logger.info(f"Using {num_processes} processes for parallel processing")
 
-        # Split the shift_range into chunks for parallel processing
-        chunk_size = max(1, len(shift_range) // num_processes)
-        shift_chunks = [shift_range[i:i + chunk_size] for i in range(0, len(shift_range), chunk_size)]
+        # --- Step 1: Rough Search on Downsampled Images ---
+        downsample_factor = 4  # A reasonable factor for initial speedup
+        logger.info(f"Performing rough search on downsampled images (factor: {downsample_factor})...")
 
-        best_result = None
+        base_array_gray_downsampled = ImageMerger._downsample_array(base_array_gray, downsample_factor)
+        new_array_gray_downsampled = ImageMerger._downsample_array(new_array_gray, downsample_factor)
 
-        # Use ProcessPoolExecutor for parallel processing
+        height_base_ds, _ = base_array_gray_downsampled.shape
+        height_new_ds, _ = new_array_gray_downsampled.shape
+
+        # Define the full range for shifts for downsampled images
+        min_shift_ds = -(height_new_ds - min_overlap_height)
+        max_shift_ds = (height_base_ds - min_overlap_height)
+        shift_range_ds = range(min_shift_ds, max_shift_ds + 1)
+
+        if not shift_range_ds:
+            logger.warning("Rough search shift range is empty. Returning no match.")
+            return None, 0, 0
+
+        chunk_size_ds = max(1, len(shift_range_ds) // num_processes)
+        shift_chunks_ds = [shift_range_ds[i:i + chunk_size_ds] for i in range(0, len(shift_range_ds), chunk_size_ds)]
+
+        all_results_ds = []
+        early_termination_rough = False
+
         with ProcessPoolExecutor(max_workers=num_processes) as executor:
-            # Submit all tasks
-            futures = [executor.submit(
+            futures_ds = [executor.submit(
                 ImageMerger._process_shift_chunk,
-                base_array_gray,
-                new_array_gray,
-                chunk,
-                threshold,
-                z_score_threshold
-            ) for chunk in shift_chunks]
+                base_array_gray_downsampled,
+                new_array_gray_downsampled,
+                chunk
+            ) for chunk in shift_chunks_ds]
 
-            # Process results as they complete
-            for future in futures:
-                shift, score, zscore, early_termination = future.result()
+            for future_ds in futures_ds:
+                chunk_results, early_termination_flag = future_ds.result()
+                if early_termination_flag:
+                    # If any worker found an excellent match, stop immediately
+                    best_shift, best_score = chunk_results # When early_termination_flag is True, chunk_results is (shift, score)
+                    logger.info(f"Early termination during rough search. Shift: {best_shift} (ds), Score: {best_score:.4f}")
+                    # Convert to original scale and mark for final decision
+                    rough_shift_original = best_shift * downsample_factor
+                    return rough_shift_original, best_score, float('inf') # Use inf for z-score to guarantee selection
+                all_results_ds.extend(chunk_results)
 
-                # If this result is better than what we have or we got an early termination
-                if shift is not None:
-                    if best_result is None or score > best_result[1]:
-                        best_result = (shift, score, zscore)
+        if not all_results_ds:
+            logger.info("No results found during rough search. Returning no match.")
+            return None, 0, 0
 
-                    # If we got an early termination, cancel all other futures
-                    if early_termination:
-                        logger.info(f"Excellent match found at shift {shift} with score {score:.4f} and z-score {zscore:.2f}")
-                        for f in futures:
-                            f.cancel()
-                        break
+        # Calculate Z-scores for all collected rough search results
+        shifts_ds = np.array([res[0] for res in all_results_ds])
+        scores_ds = np.array([res[1] for res in all_results_ds])
 
-        # If we found a result, return it
-        if best_result:
-            shift, score, zscore = best_result
-            logger.info(f"Best match: shift={shift}, score={score:.4f}, z-score={zscore:.2f}")
-            return shift, score, zscore
+        # Filter results based on initial SSIM score
+        filtered_indices_ds = scores_ds >= threshold
+        if not np.any(filtered_indices_ds):
+            logger.info("No rough match found above SSIM threshold. Returning no match.")
+            return None, 0, 0
 
-        # If no good match was found
-        logger.info("No good match found")
-        return None, 0, 0
+        filtered_scores_ds = scores_ds[filtered_indices_ds]
+        filtered_shifts_ds = shifts_ds[filtered_indices_ds]
+
+        if len(filtered_scores_ds) < 5: # Need enough data points for meaningful std/z-score
+            # If not enough data for z-score, pick the best score among filtered
+            best_idx_ds = np.argmax(filtered_scores_ds)
+            best_shift_ds = filtered_shifts_ds[best_idx_ds]
+            best_score_ds = filtered_scores_ds[best_idx_ds]
+            best_zscore_ds = 0 # No meaningful z-score
+            logger.info(f"Rough search: Not enough data for robust Z-score, best score selected based on SSIM. Shift: {best_shift_ds} (ds), Score: {best_score_ds:.4f}")
+        else:
+            mean_score_ds = np.mean(filtered_scores_ds)
+            std_score_ds = np.std(filtered_scores_ds)
+
+            z_scores_ds = (filtered_scores_ds - mean_score_ds) / (std_score_ds + 1e-8) # Add epsilon to prevent division by zero
+
+            # Find the best result that meets the z-score threshold
+            z_score_filtered_indices_ds = z_scores_ds > z_score_threshold
+            if not np.any(z_score_filtered_indices_ds):
+                logger.info("No rough match found above Z-score threshold. Returning no match.")
+                return None, 0, 0
+
+            # Select the best among the z-score filtered results
+            best_idx_ds = np.argmax(filtered_scores_ds[z_score_filtered_indices_ds])
+            best_shift_ds = filtered_shifts_ds[z_score_filtered_indices_ds][best_idx_ds]
+            best_score_ds = filtered_scores_ds[z_score_filtered_indices_ds][best_idx_ds]
+            best_zscore_ds = z_scores_ds[z_score_filtered_indices_ds][best_idx_ds]
+            logger.info(f"Rough shift found: {best_shift_ds} (downsampled), Score: {best_score_ds:.4f}, Z-score: {best_zscore_ds:.2f}")
+
+
+        # --- Step 2: Refinement Search on Original Images ---
+        rough_shift_original = best_shift_ds * downsample_factor
+        logger.info(f"Rough shift found: {best_shift_ds} (downsampled), {rough_shift_original} (original scale).")
+
+        # Define a refinement window around the rough shift
+        refinement_window_size = downsample_factor * 15 # A slightly larger window for refinement
+        min_shift_refined = max(-(height_new - min_overlap_height), rough_shift_original - refinement_window_size)
+        max_shift_refined = min((height_base - min_overlap_height), rough_shift_original + refinement_window_size)
+
+        shift_range_refined = range(min_shift_refined, max_shift_refined + 1)
+        if not shift_range_refined:
+            logger.warning("Refinement shift range is empty. Returning no match.")
+            return None, 0, 0
+
+        logger.info(f"Performing refinement search on original images in range: [{min_shift_refined}, {max_shift_refined}].")
+        chunk_size_refined = max(1, len(shift_range_refined) // num_processes)
+        shift_chunks_refined = [shift_range_refined[i:i + chunk_size_refined] for i in range(0, len(shift_range_refined), chunk_size_refined)]
+
+        all_results_refined = []
+        early_termination_refined = False
+
+        with ProcessPoolExecutor(max_workers=num_processes) as executor:
+            futures_refined = [executor.submit(
+                ImageMerger._process_shift_chunk,
+                base_array_gray,  # Use original arrays
+                new_array_gray,   # Use original arrays
+                chunk
+            ) for chunk in shift_chunks_refined]
+
+            for future_refined in futures_refined:
+                chunk_results, early_termination_flag = future_refined.result()
+                if early_termination_flag:
+                    # If any worker found an excellent match, stop immediately
+                    best_shift, best_score = chunk_results
+                    logger.info(f"Excellent match during refinement search. Shift: {best_shift}, Score: {best_score:.4f}")
+                    return best_shift, best_score, float('inf') # Use inf for z-score to guarantee selection
+                all_results_refined.extend(chunk_results)
+
+        if not all_results_refined:
+            logger.info("No results found during refinement search. Returning no match.")
+            return None, 0, 0
+
+        # Calculate Z-scores for all collected refinement search results
+        shifts_refined = np.array([res[0] for res in all_results_refined])
+        scores_refined = np.array([res[1] for res in all_results_refined])
+
+        # Filter results based on initial SSIM score
+        filtered_indices_refined = scores_refined >= threshold
+        if not np.any(filtered_indices_refined):
+            logger.info("No refined match found above SSIM threshold. Returning no match.")
+            return None, 0, 0
+
+        filtered_scores_refined = scores_refined[filtered_indices_refined]
+        filtered_shifts_refined = shifts_refined[filtered_indices_refined]
+
+        if len(filtered_scores_refined) < 5: # Need enough data points for meaningful std/z-score
+            best_idx_refined = np.argmax(filtered_scores_refined)
+            shift = filtered_shifts_refined[best_idx_refined]
+            score = filtered_scores_refined[best_idx_refined]
+            zscore = 0 # No meaningful z-score
+            logger.info(f"Refinement search: Not enough data for robust Z-score, best score selected based on SSIM. Shift: {shift}, Score: {score:.4f}")
+        else:
+            mean_score_refined = np.mean(filtered_scores_refined)
+            std_score_refined = np.std(filtered_scores_refined)
+
+            z_scores_refined = (filtered_scores_refined - mean_score_refined) / (std_score_refined + 1e-8)
+
+            # Find the best result that meets the z-score threshold
+            z_score_filtered_indices_refined = z_scores_refined > z_score_threshold
+            if not np.any(z_score_filtered_indices_refined):
+                logger.info("No refined match found above Z-score threshold. Returning no match.")
+                return None, 0, 0
+
+            # Select the best among the z-score filtered results
+            best_idx_refined = np.argmax(filtered_scores_refined[z_score_filtered_indices_refined])
+            shift = filtered_shifts_refined[z_score_filtered_indices_refined][best_idx_refined]
+            score = filtered_scores_refined[z_score_filtered_indices_refined][best_idx_refined]
+            zscore = z_scores_refined[z_score_filtered_indices_refined][best_idx_refined]
+            logger.info(f"Best match (refined): shift={shift}, score={score:.4f}, z-score={zscore:.2f}")
+
+        return shift, score, zscore
 
 
     @staticmethod
