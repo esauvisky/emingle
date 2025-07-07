@@ -73,7 +73,8 @@ def main():
                 " - Press Escape to finish capturing, merge images and send to your clipboard.\n")
 
     # Take initial screenshot
-    screenshots = [capture_screenshot(selection)]
+    initial_screenshot = capture_screenshot(selection)
+    screenshots = [initial_screenshot]
     logger.info("Captured initial screenshot.")
 
     while not keyboard_listener.exit_event:
@@ -86,42 +87,48 @@ def main():
 
     logger.info("Merging screenshots...")
 
-    # Start with the first image as the base
+    # Find and identify fixed top and bottom borders
+    top, bottom, left_ignore, right_ignore = ImageMerger.find_fixed_borders(screenshots)
+    # The left and right values from find_fixed_borders are ignored as we want to keep the full width
 
-    # Find and remove fixed borders
-    top, bottom, left, right = ImageMerger.find_fixed_borders(screenshots)
-    logger.info(f"Cropping images to region: top={top}, bottom={bottom}, left={left}, right={right}")
+    logger.info(f"Cropping images vertically: top={top}, bottom={bottom}")
 
-    cropped_images = []
+    processed_images = []
     for img in screenshots:
         img_array = np.array(img)
-        cropped_array = ImageMerger.remove_borders(img_array, top, bottom, left, right)
-        cropped_img = Image.fromarray(cropped_array)
-        cropped_images.append(cropped_img)
+        # remove_borders now only crops vertically, retaining full width
+        processed_array = ImageMerger.remove_borders(img_array, top, bottom, 0, img_array.shape[1])
+        processed_img = Image.fromarray(processed_array)
+        processed_images.append(processed_img)
 
-    logger.info(f"Images dimensions: {[img.size for img in screenshots]}")
-    merged_image = cropped_images[0]
-    for new_img in cropped_images[1:]:
+    logger.info(f"Images dimensions (after vertical cropping): {[img.size for img in processed_images]}")
+    merged_image = processed_images[0]
+    for new_img in processed_images[1:]:
+        # Merge the vertically-cropped, full-width images
         merged_image = ImageMerger.merge_images_vertically(
             merged_image, new_img, threshold=0.5
         )
         if merged_image is None:
-            logger.warning(f"Failed to merge screenshot. Skipping.")
+            logger.warning(f"Failed to merge screenshot. The process will continue with the last successful merge.")
+            # If a merge fails (e.g., no overlap found), merged_image will remain the previous base image.
+            # This allows subsequent images to try and merge with it.
 
     if merged_image is not None:
+        # No need to add borders back, as horizontal borders were never removed.
+        final_image_to_clipboard = merged_image
+
         if Config["DEBUG_MODE"]:
             temp_dir = tempfile.mkdtemp()
             logger.info(f"Saving debug images to: {temp_dir}")
             for i, screenshot in enumerate(screenshots):
                 screenshot.save(os.path.join(temp_dir, f"screenshot_{i}.png"))
-            merged_image.save(os.path.join(temp_dir, "merged_screenshot.png"))
-            merged_image.show()
+            final_image_to_clipboard.save(os.path.join(temp_dir, "merged_screenshot.png"))
+            final_image_to_clipboard.show()
 
         logger.info("Copying merged image to clipboard...")
-        # app.ExitMainLoop()
-        ClipboardManager.copy_image_to_clipboard(merged_image)
+        ClipboardManager.copy_image_to_clipboard(final_image_to_clipboard)
     else:
-        logger.error("No screenshots were taken, nothing to copy to clipboard.")
+        logger.error("No screenshots were captured or merged successfully, nothing to copy to clipboard.")
 
 
 if __name__ == "__main__":

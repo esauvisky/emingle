@@ -563,19 +563,26 @@ if __name__ == "__main__":
             # Start with the first image as the base
             image_files_objs = [Image.open(img_path) for img_path in image_files]
             logger.info(f"Images dimensions: {[img.size for img in image_files_objs]}")
-            top, bottom, left, right = ImageMerger.find_fixed_borders(image_files_objs)
-            image_files_objs = [
-                ImageMerger.remove_borders(np.array(img), top, bottom, left, right) for img in image_files_objs]
-            image_files_objs = [Image.fromarray(img) for img in image_files_objs]
+            # Only find top and bottom fixed borders; left/right will be 0 and full width
+            top, bottom, _, _ = ImageMerger.find_fixed_borders(image_files_objs)
+            
+            processed_image_objs = []
+            for img in image_files_objs:
+                img_array = np.array(img)
+                # Remove only top and bottom borders, retaining full width
+                processed_array = ImageMerger.remove_borders(img_array, top, bottom, 0, img_array.shape[1])
+                processed_image_objs.append(Image.fromarray(processed_array))
 
-            logger.info(f"Images dimensions: {[img.size for img in image_files_objs]}")
-            base_img = image_files_objs[0]
-            for new_img in image_files_objs[1:]:
+            logger.info(f"Images dimensions (after vertical cropping): {[img.size for img in processed_image_objs]}")
+            base_img = processed_image_objs[0]
+            for new_img in processed_image_objs[1:]:
                 base_img = ImageMerger.merge_images_vertically(base_img, new_img, threshold=0.1)
 
             # Save the merged image temporarily
             merged_temp_path = os.path.join(subdir_path, "merged_temp.png")
-            base_img.save(merged_temp_path)
+            # Ensure base_img is not None after merges
+            if base_img: 
+                base_img.save(merged_temp_path)
 
             # Compare with the existing merged image
             existing_merged_path = os.path.join(subdir_path, "merged_screenshot.png")
