@@ -139,7 +139,7 @@ class ImageMerger:
                     return shift, combined_score, z_score
 
             # Visualization for debugging
-            if Config["DEBUG_MODE"] and (len(shifts) % 50 == 0 or combined_score > 0.9):
+            if Config["DEBUG_MODE"] and (len(shifts) % 43 == 0 or combined_score > 0.9):
                 overlap_size_percentage = overlap_height / height_new
 
                 plt.suptitle(f"Shift: {shift}\n"
