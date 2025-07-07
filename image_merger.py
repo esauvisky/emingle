@@ -8,6 +8,8 @@ from scipy.ndimage import sobel
 import os
 import random
 import time
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from skimage.feature import match_template
 
 from loguru import logger
@@ -50,41 +52,22 @@ class ImageMerger:
         return array[top:bottom, left:right]
 
     @staticmethod
-    def find_image_overlap(base_array_gray, new_array_gray, threshold=0.8, z_score_threshold=2.0):
+    def _process_shift_chunk(base_array_gray, new_array_gray, shift_chunk, threshold, z_score_threshold):
+        """Process a chunk of shifts in a separate process"""
         from skimage.metrics import structural_similarity as ssim
-        from scipy.ndimage import sobel
 
         height_base, width = base_array_gray.shape
         height_new, _ = new_array_gray.shape
 
         best_shift = None
-        best_score = 0  # Initialize with a low value (we'll maximize instead of minimize)
+        best_score = 0
         best_zscore = 0
-
-        fig = None
-        axs = []
-        if Config["DEBUG_MODE"]:
-            fig, axs = plt.subplots(1, 3, figsize=(10, 8))  # Create three subplots side by side
 
         shifts = []
         scores = []
         zscores = []
 
-        # We're not using edge detection anymore since we're only using SSIM
-
-        # Define the range for shifts with a reasonable margin
-        margin = 5
-
-        # Prioritize checking shifts where we expect overlaps
-        # First check negative shifts (new image above base image)
-        # Then check positive shifts (new image below base image)
-        shift_ranges = [
-            range(-height_new + 1 + margin, 0),  # Negative shifts
-            range(height_base - margin, 0, -1)       # Positive shifts
-        ]
-        shift_range = [val for pair in zip(*shift_ranges) for val in pair]
-
-        for shift in shift_range:
+        for shift in shift_chunk:
             if shift >= 0:
                 # Overlapping regions (new image below base image)
                 overlap_height = min(height_base - shift, height_new)
@@ -104,14 +87,12 @@ class ImageMerger:
             if base_overlap.shape != new_overlap.shape:
                 continue
 
-            # # Skip if overlap is too small
+            # Skip if overlap is too small
             if overlap_height < 7:
                 continue
 
-            # Calculate SSIM for structural similarity (ranges from -1 to 1, higher is better)
+            # Calculate SSIM for structural similarity
             ssim_score = ssim(base_overlap, new_overlap, data_range=255)
-
-            # Use SSIM score directly as our combined score
             combined_score = ssim_score
 
             shifts.append(shift)
@@ -135,54 +116,85 @@ class ImageMerger:
 
                 # Early termination if we find an exceptionally good match
                 if combined_score > 0.95 and z_score > 2.0:
-                    logger.info(f"Excellent match found at shift {shift} with score {combined_score:.4f} and z-score {z_score:.2f}")
-                    return shift, combined_score, z_score
-
-            # Visualization for debugging
-            if Config["DEBUG_MODE"] and (len(shifts) % 43 == 0 or combined_score > 0.9):
-                overlap_size_percentage = overlap_height / height_new
-
-                plt.suptitle(f"Shift: {shift}\n"
-                            f"Overlap Size: {overlap_size_percentage:.0%}\n"
-                            f"Combined Score: {combined_score:.4f}\n"
-                            f"Z-score: {z_score:.2f}")
-
-                logger.debug(f"Shift: {shift}. Overlap height: {overlap_height}, "
-                            f"Combined Score: {combined_score:.4f}, Z-score: {z_score:.2f}")
-
-                if len(axs) >= 3:
-                    axs[0].clear()
-                    axs[1].clear()
-                    axs[2].clear()
-
-                    # Display the overlapping regions side by side
-                    axs[0].imshow(base_overlap, cmap='gray')
-                    axs[0].set_title("Base Overlap")
-                    axs[0].axis('off')
-
-                    axs[1].imshow(new_overlap, cmap='gray')
-                    axs[1].set_title("New Overlap")
-                    axs[1].axis('off')
-
-                    # Plot scores against shifts
-                    axs[2].set_title("Scores vs. Shift")
-                    axs[2].set_xlabel("Shift")
-                    axs[2].set_ylabel("Score")
-                    axs[2].scatter(shifts, scores, color='blue', alpha=0.5, s=5)
-                    axs[2].scatter(best_shift, best_score, color='red', s=50)
-
-                    plt.draw()
-                    plt.pause(0.00001)
-
-        if Config["DEBUG_MODE"] and fig is not None:
-            plt.close(fig)
-
-        logger.info(f"Best match: shift={best_shift}, score={best_score:.4f}, z-score={best_zscore:.2f}")
+                    return shift, combined_score, z_score, True  # True indicates early termination
 
         # Return the best shift if it meets the threshold
         if best_score >= threshold and best_zscore > z_score_threshold:
-            return best_shift, best_score, best_zscore
-        return None, best_score, best_zscore
+            return best_shift, best_score, best_zscore, False  # False indicates normal completion
+        return None, best_score, best_zscore, False
+
+    @staticmethod
+    def find_image_overlap(base_array_gray, new_array_gray, threshold=0.8, z_score_threshold=2.0):
+        from skimage.metrics import structural_similarity as ssim
+        from scipy.ndimage import sobel
+
+        height_base, width = base_array_gray.shape
+        height_new, _ = new_array_gray.shape
+
+        fig = None
+        axs = []
+        if Config["DEBUG_MODE"]:
+            fig, axs = plt.subplots(1, 3, figsize=(10, 8))  # Create three subplots side by side
+
+        # Define the range for shifts with a reasonable margin
+        margin = 5
+
+        # Prioritize checking shifts where we expect overlaps
+        # First check negative shifts (new image above base image)
+        # Then check positive shifts (new image below base image)
+        shift_ranges = [
+            range(-height_new + 1 + margin, 0),  # Negative shifts
+            range(height_base - margin, 0, -1)   # Positive shifts
+        ]
+        shift_range = [val for pair in zip(*shift_ranges) for val in pair]
+
+        # Determine number of processes to use (half of CPU cores)
+        num_processes = max(1, multiprocessing.cpu_count() // 2)
+        logger.info(f"Using {num_processes} processes for parallel processing")
+
+        # Split the shift_range into chunks for parallel processing
+        chunk_size = max(1, len(shift_range) // num_processes)
+        shift_chunks = [shift_range[i:i + chunk_size] for i in range(0, len(shift_range), chunk_size)]
+
+        best_result = None
+
+        # Use ProcessPoolExecutor for parallel processing
+        with ProcessPoolExecutor(max_workers=num_processes) as executor:
+            # Submit all tasks
+            futures = [executor.submit(
+                ImageMerger._process_shift_chunk,
+                base_array_gray,
+                new_array_gray,
+                chunk,
+                threshold,
+                z_score_threshold
+            ) for chunk in shift_chunks]
+
+            # Process results as they complete
+            for future in futures:
+                shift, score, zscore, early_termination = future.result()
+
+                # If this result is better than what we have or we got an early termination
+                if shift is not None:
+                    if best_result is None or score > best_result[1]:
+                        best_result = (shift, score, zscore)
+
+                    # If we got an early termination, cancel all other futures
+                    if early_termination:
+                        logger.info(f"Excellent match found at shift {shift} with score {score:.4f} and z-score {zscore:.2f}")
+                        for f in futures:
+                            f.cancel()
+                        break
+
+        # If we found a result, return it
+        if best_result:
+            shift, score, zscore = best_result
+            logger.info(f"Best match: shift={shift}, score={score:.4f}, z-score={zscore:.2f}")
+            return shift, score, zscore
+
+        # If no good match was found
+        logger.info("No good match found")
+        return None, 0, 0
 
 
     @staticmethod
