@@ -134,7 +134,7 @@ def main():
 
     # UI
     app = wx.App(False)
-    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"])
+    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"], selection_region=selection)
 
     # Thread
     t = threading.Thread(
