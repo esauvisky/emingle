@@ -3,12 +3,14 @@ import numpy as np
 from PIL import Image
 
 class LivePreviewFrame(wx.Frame):
-    def __init__(self, screen_height):
+    def __init__(self, screen_height, debug_mode=False):
         # Create a tall, narrow window on the right side
-        width = 400
+        width = 400 if not debug_mode else 500
         height = 600
         style = wx.STAY_ON_TOP | wx.FRAME_TOOL_WINDOW | wx.CAPTION | wx.RESIZE_BORDER
         super().__init__(None, title="Live Stitcher", size=(width, height), style=style)
+        
+        self.debug_mode = debug_mode
 
         # Position at top-right
         display_width, _ = wx.DisplaySize()
@@ -25,6 +27,35 @@ class LivePreviewFrame(wx.Frame):
         self.status_label.SetForegroundColour(wx.WHITE)
         self.sizer.Add(self.status_label, 0, wx.ALL | wx.EXPAND, 5)
 
+        # Debug Info Panel (only if debug mode)
+        if self.debug_mode:
+            self.debug_panel = wx.Panel(self.panel)
+            self.debug_panel.SetBackgroundColour(wx.Colour(40, 40, 40))
+            debug_sizer = wx.BoxSizer(wx.VERTICAL)
+            
+            self.debug_title = wx.StaticText(self.debug_panel, label="Debug Statistics:")
+            self.debug_title.SetForegroundColour(wx.YELLOW)
+            debug_sizer.Add(self.debug_title, 0, wx.ALL, 2)
+            
+            self.debug_height = wx.StaticText(self.debug_panel, label="Total Height: 0px")
+            self.debug_height.SetForegroundColour(wx.WHITE)
+            debug_sizer.Add(self.debug_height, 0, wx.ALL, 2)
+            
+            self.debug_added = wx.StaticText(self.debug_panel, label="Height Added: 0px")
+            self.debug_added.SetForegroundColour(wx.WHITE)
+            debug_sizer.Add(self.debug_added, 0, wx.ALL, 2)
+            
+            self.debug_processing = wx.StaticText(self.debug_panel, label="Processing Time: 0.0s")
+            self.debug_processing.SetForegroundColour(wx.WHITE)
+            debug_sizer.Add(self.debug_processing, 0, wx.ALL, 2)
+            
+            self.debug_debounce = wx.StaticText(self.debug_panel, label="Debounce Time: 0.0s")
+            self.debug_debounce.SetForegroundColour(wx.WHITE)
+            debug_sizer.Add(self.debug_debounce, 0, wx.ALL, 2)
+            
+            self.debug_panel.SetSizer(debug_sizer)
+            self.sizer.Add(self.debug_panel, 0, wx.EXPAND | wx.ALL, 5)
+
         # Image Display Area
         self.image_ctrl = wx.StaticBitmap(self.panel)
         self.sizer.Add(self.image_ctrl, 1, wx.EXPAND | wx.ALL, 5)
@@ -34,11 +65,18 @@ class LivePreviewFrame(wx.Frame):
         self.last_merged_image = None
         self.Show()
 
-    def update_image(self, pil_image, status="Merged", success=True):
+    def update_image(self, pil_image, status="Merged", success=True, debug_info=None):
         """
         Updates the preview with the BOTTOM part of the huge merged image.
         """
         self.status_label.SetLabel(status)
+        
+        # Update debug info if provided
+        if self.debug_mode and debug_info:
+            self.debug_height.SetLabel(f"Total Height: {debug_info['total_height']}px")
+            self.debug_added.SetLabel(f"Height Added: {debug_info['height_added']}px")
+            self.debug_processing.SetLabel(f"Processing Time: {debug_info['processing_time']:.3f}s")
+            self.debug_debounce.SetLabel(f"Debounce Time: {debug_info['debounce_time']:.3f}s")
 
         if success:
             self.panel.SetBackgroundColour("#228B22") # Forest Green

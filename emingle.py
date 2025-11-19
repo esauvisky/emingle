@@ -79,9 +79,21 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
 
                 if merged_result.height > full_merged_image.height:
                     # Success
+                    old_height = full_merged_image.height
                     full_merged_image = merged_result
                     logger.success(f"Merged! Total height: {full_merged_image.height}px")
-                    wx.CallAfter(preview_window.update_image, full_merged_image, "Merged! Keep scrolling.", True)
+
+                    # Pass debug info if in debug mode
+                    debug_info = None
+                    if Config["DEBUG_MODE"]:
+                        debug_info = {
+                            'total_height': full_merged_image.height,
+                            'height_added': full_merged_image.height - old_height,
+                            'processing_time': time.time() - last_scroll,
+                            'debounce_time': time_since_scroll
+                        }
+
+                    wx.CallAfter(preview_window.update_image, full_merged_image, "Merged! Keep scrolling.", True, debug_info)
                 else:
                     # Fail
                     logger.warning("Merge failed (No overlap).")
@@ -121,7 +133,7 @@ def main():
 
     # UI
     app = wx.App(False)
-    preview = LivePreviewFrame(selection['height'])
+    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"])
 
     # Thread
     t = threading.Thread(
