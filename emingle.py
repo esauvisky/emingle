@@ -32,7 +32,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
     global full_merged_image, capture_running
 
     # Configuration
-    DEBOUNCE_TIME = 0.3  # Seconds to wait after scrolling stops
+    DEBOUNCE_TIME = 0.5  # Seconds to wait after scrolling stops
 
     logger.info("Step 1: Capturing initial base image...")
 
@@ -100,7 +100,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
                     logger.warning("Merge failed (No overlap).")
                     wx.CallAfter(preview_window.update_image, full_merged_image, "MISMATCH! Scroll UP slightly.", False)
 
-        time.sleep(0.005)
+        time.sleep(0.01)
 
     # --- FINALIZATION ---
     if full_merged_image:
