@@ -186,34 +186,100 @@ class ImageMerger:
 
     @staticmethod
     def _save_debug_plot(debug_id, gray_base, gray_new, feat_base, feat_new, result, shift, overlap_height, score, search_start_y):
-        # (Same visualization code as previous step, but ensuring backend safety)
         try:
             plt.switch_backend('Agg')
-            fig = plt.figure(figsize=(10, 6))
-            gs = fig.add_gridspec(2, 2)
+            fig = plt.figure(figsize=(16, 12))
+            gs = fig.add_gridspec(3, 3, height_ratios=[1, 1, 1])
 
+            # Row 1: Original Images
             ax1 = fig.add_subplot(gs[0, 0])
-            ax1.imshow(feat_base[-int(feat_base.shape[0]/2):], cmap='jet')
-            ax1.set_title("Edge Features (Base)")
+            ax1.imshow(gray_base, cmap='gray')
+            ax1.set_title(f"Base Image (Gray)\n{gray_base.shape[0]}x{gray_base.shape[1]}")
+            ax1.axis('off')
 
             ax2 = fig.add_subplot(gs[0, 1])
-            ax2.imshow(result, cmap='viridis')
-            ax2.set_title(f"Match Score: {score:.2f}")
+            ax2.imshow(gray_new, cmap='gray')
+            ax2.set_title(f"New Image (Gray)\n{gray_new.shape[0]}x{gray_new.shape[1]}")
+            ax2.axis('off')
 
-            ax3 = fig.add_subplot(gs[1, :])
+            ax3 = fig.add_subplot(gs[0, 2])
             if overlap_height > 0:
-                # Visualizing the Robust Difference
                 r1 = gray_base[shift : shift + overlap_height]
                 r2 = gray_new[:overlap_height]
                 if r1.shape == r2.shape:
                     diff = np.abs(r1 - r2)
-                    # highlight large diffs in red
-                    ax3.imshow(diff, cmap='gray', vmin=0, vmax=50)
-                    ax3.set_title(f"Difference Map (Darker = Better Match)")
+                    im3 = ax3.imshow(diff, cmap='hot', vmin=0, vmax=50)
+                    ax3.set_title(f"Pixel Difference\nMean: {np.mean(diff):.1f}, Max: {np.max(diff):.1f}")
+                    plt.colorbar(im3, ax=ax3, shrink=0.6)
+            ax3.axis('off')
+
+            # Row 2: Sobel Edge Features
+            ax4 = fig.add_subplot(gs[1, 0])
+            im4 = ax4.imshow(feat_base, cmap='RdBu_r', vmin=-50, vmax=50)
+            ax4.set_title(f"Base Sobel Edges\nMin: {np.min(feat_base):.1f}, Max: {np.max(feat_base):.1f}")
+            ax4.axis('off')
+            plt.colorbar(im4, ax=ax4, shrink=0.6)
+
+            ax5 = fig.add_subplot(gs[1, 1])
+            im5 = ax5.imshow(feat_new, cmap='RdBu_r', vmin=-50, vmax=50)
+            ax5.set_title(f"New Sobel Edges\nMin: {np.min(feat_new):.1f}, Max: {np.max(feat_new):.1f}")
+            ax5.axis('off')
+            plt.colorbar(im5, ax=ax5, shrink=0.6)
+
+            ax6 = fig.add_subplot(gs[1, 2])
+            if overlap_height > 0:
+                feat1 = feat_base[shift : shift + overlap_height]
+                feat2 = feat_new[:overlap_height]
+                if feat1.shape == feat2.shape:
+                    sobel_diff = np.abs(feat1 - feat2)
+                    im6 = ax6.imshow(sobel_diff, cmap='plasma', vmin=0, vmax=30)
+                    ax6.set_title(f"Sobel Difference\nMean: {np.mean(sobel_diff):.1f}, Max: {np.max(sobel_diff):.1f}")
+                    plt.colorbar(im6, ax=ax6, shrink=0.6)
+            ax6.axis('off')
+
+            # Row 3: Template Matching and Overlap Visualization
+            ax7 = fig.add_subplot(gs[2, 0])
+            im7 = ax7.imshow(result, cmap='viridis')
+            ax7.set_title(f"Template Match Result\nScore: {score:.3f}")
+            ax7.axis('off')
+            plt.colorbar(im7, ax=ax7, shrink=0.6)
+
+            ax8 = fig.add_subplot(gs[2, 1])
+            # Show the search region with match location highlighted
+            search_region = feat_base[search_start_y:, :]
+            ax8.imshow(search_region, cmap='gray')
+            if overlap_height > 0:
+                match_y = shift - search_start_y
+                rect = patches.Rectangle((0, match_y), search_region.shape[1], overlap_height, 
+                                       linewidth=2, edgecolor='red', facecolor='none')
+                ax8.add_patch(rect)
+            ax8.set_title(f"Search Region\nShift: {shift}, Overlap: {overlap_height}px")
+            ax8.axis('off')
+
+            ax9 = fig.add_subplot(gs[2, 2])
+            # Statistics text
+            stats_text = f"""Match Statistics:
+Score: {score:.3f}
+Shift: {shift}px
+Overlap: {overlap_height}px
+Search Start: {search_start_y}px
+
+Image Info:
+Base: {gray_base.shape}
+New: {gray_new.shape}
+
+Sobel Stats:
+Base range: [{np.min(feat_base):.1f}, {np.max(feat_base):.1f}]
+New range: [{np.min(feat_new):.1f}, {np.max(feat_new):.1f}]
+"""
+            ax9.text(0.05, 0.95, stats_text, transform=ax9.transAxes, fontsize=10,
+                    verticalalignment='top', fontfamily='monospace',
+                    bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+            ax9.axis('off')
 
             os.makedirs("debug_output", exist_ok=True)
             plt.tight_layout()
-            plt.savefig(f"debug_output/merge_step_{debug_id}.png")
+            plt.savefig(f"debug_output/merge_step_{debug_id}.png", dpi=150, bbox_inches='tight')
             plt.close(fig)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to save debug plot: {e}")
