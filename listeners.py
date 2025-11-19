@@ -1,8 +1,7 @@
-
+import time
 from threading import Thread
 from loguru import logger
-from pynput import keyboard, mouse  # Modified import
-
+from pynput import keyboard, mouse
 
 class KeyboardListener:
     def __init__(self):
@@ -11,10 +10,9 @@ class KeyboardListener:
     def start(self):
         listener_thread = Thread(target=self._listen_keyboard, daemon=True)
         listener_thread.start()
-        self.listener_thread = listener_thread
 
     def _listen_keyboard(self):
-        with keyboard.Listener(on_press=self._on_press) as listener:  # type: ignore
+        with keyboard.Listener(on_press=self._on_press) as listener:
             listener.join()
 
     def _on_press(self, key):
@@ -22,35 +20,30 @@ class KeyboardListener:
             if key == keyboard.Key.esc:
                 self.exit_event = True
                 logger.info("Escape key pressed. Exiting...")
-                return False  # Stop listener
+                return False
         except AttributeError:
             pass
 
 class MouseScrollListener:
     def __init__(self, keyboard_listener):
-        self.screenshot_event = False
-        self.exit_event = False
-        self.scroll_count = 0
-        self.scroll_threshold = 4  # Number of scrolls before triggering screenshot
         self.keyboard_listener = keyboard_listener
+        # Store the exact time the last scroll happened
+        self.last_scroll_time = 0
 
     def start(self):
         listener_thread = Thread(target=self._listen_mouse, daemon=True)
         listener_thread.start()
-        self.listener_thread = listener_thread
 
     def _listen_mouse(self):
         with mouse.Listener(on_scroll=self._on_scroll) as listener:
             listener.join()
 
     def _on_scroll(self, x, y, dx, dy):
-        if self.exit_event or self.keyboard_listener.exit_event:
+        if self.keyboard_listener.exit_event:
             return False
-        self.scroll_count += 1
-        logger.debug(f"Mouse scrolled: count={self.scroll_count}")
-        if self.scroll_count >= self.scroll_threshold:
-            self.screenshot_event = True
-            self.scroll_count = 0
+
+        # Just update the timestamp. The main loop handles the logic.
+        self.last_scroll_time = time.time()
 
 class WxAppRunner:
     def __init__(self, app_class):
