@@ -1,78 +1,127 @@
-# Screenshot Merger: Because Scrolling is Too Hard
+# Emingle: Intelligent Screenshot Stitching
 
-Welcome to Screenshot Merger, the tool for those who find scrolling and taking multiple screenshots just too darn difficult. Why bother with all that manual labor when you can have a script do it for you?
+Emingle is an intelligent screenshot stitching tool that automatically captures and merges screenshots as you scroll through content. It uses advanced computer vision techniques to seamlessly stitch images together, creating long continuous screenshots of web pages, documents, or any scrollable content.
 
-## What is this?
+https://github.com/user-attachments/assets/3dbd3d1c-adab-4df8-91d5-1b10f5e67d03
 
-It's a magical piece of software that takes screenshots as you scroll, then merges them together. Because apparently, we've reached a point in human evolution where even scrolling is too much work.
+## Features
+
+- **Automatic Screenshot Capture**: Detects when you stop scrolling and automatically captures screenshots
+- **Intelligent Image Merging**: Uses Sobel edge detection and template matching to find optimal merge points
+- **Live Preview Window**: Real-time preview of the merged image with smart positioning
+- **Debug Mode**: Comprehensive debugging information and visualizations
+- **Cross-Platform**: Works on Windows and Linux
+- **Smart Debouncing**: Only captures when scrolling has settled (0.5s delay)
+- **Robust Overlap Detection**: Handles dynamic content like blinking cursors and changing elements
 
 ## Requirements
 
-- A computer (shocking, I know)
-- Python 3.x (because who doesn't have Python installed these days?)
-- A functioning scroll wheel on your mouse (if you don't have this, maybe it's time to join the 21st century)
-- The ability to press the Escape key (it's usually the one labeled "Esc" - you're welcome)
+- Python 3.7+
+- A functioning scroll wheel or trackpad
+- Ability to press the Escape key to finish capture
 
-### Additional Requirements for Linux Users
-- ImageMagick (for the `import` command)
-- Either `copyq` or `xclip` (for clipboard operations)
+### Python Dependencies
 
-### Additional Requirements for Windows Users
-- pywin32 (for clipboard operations)
+Install with: `pip install -r requirements.txt`
+
+- loguru (logging)
+- matplotlib (debug visualizations)
+- numpy (image processing)
+- scipy (edge detection)
+- scikit-image (template matching)
+- pillow (image handling)
+- mss (screenshot capture)
+- wxPython (GUI)
+- pynput (input monitoring)
+
+### System Dependencies
+
+**Linux users:**
+```bash
+sudo apt-get install copyq  # or xclip for clipboard support
+```
+
+**Windows users:**
+```bash
+pip install pywin32  # for clipboard operations
+```
 
 ## How to Use
 
-1. Clone this repository (if you don't know how to do this, maybe stick to crayons and paper)
-2. Install the requirements:
-   ```
+1. **Install dependencies:**
+   ```bash
    pip install -r requirements.txt
    ```
-   (Yes, you actually have to install things. Welcome to software development!)
 
-   For Linux users:
+2. **Run the application:**
+   ```bash
+   python emingle.py
    ```
-   sudo apt-get install imagemagick copyq
-   ```
-   or
-   ```
-   sudo apt-get install imagemagick xclip
-   ```
-   (Choose either copyq or xclip, whichever tickles your fancy)
 
-   For Windows users:
-   ```
-   pip install pywin32
-   ```
-   (Because apparently, Windows needs extra help to do simple things)
+3. **Select capture region:**
+   - Click and drag to select the area you want to capture
+   - The selection will be highlighted
 
-3. Run the script:
-   ```
-   python screenshot_merger.py
-   ```
-   (Pro tip: You can assign a shortcut to this command if opening a terminal is too much work for you)
+4. **Start scrolling:**
+   - Scroll through your content normally
+   - The live preview window will appear showing the merged result
+   - Wait 0.5 seconds after each scroll for the capture to trigger
 
-4. Select the region you want to capture. Try not to strain yourself.
+5. **Monitor progress:**
+   - Green background = successful merge
+   - Red background = merge failed (scroll up slightly)
+   - Yellow overlay highlights newly added content
 
-5. Scroll through your content. The script will take a screenshot every 5 scrolls. It's like magic, but with more Python.
+6. **Finish capture:**
+   - Press **Escape** when done
+   - The final merged image is automatically copied to your clipboard
 
-6. When you're done, press the Escape key. Yes, that's it. One key. You can do it!
+## Debug Mode
 
-7. The merged image will be copied to your clipboard. Paste it wherever you want and bask in the glory of your "hard work".
+Run with `--debug` flag for detailed information:
 
-## Debugging
-
-If things go wrong (and let's face it, they probably will), run the script with the `--debug` flag:
-
-```
-python screenshot_merger.py --debug
+```bash
+python emingle.py --debug
 ```
 
-This will show you what's happening behind the scenes. Try not to be too amazed by the technical wizardry.
+Debug mode provides:
+- Processing statistics in the live preview
+- Detailed merge visualizations saved to `debug_output/`
+- Sobel edge detection analysis
+- Template matching scores
+- Pixel difference maps
 
-## Final Thoughts
+## How It Works
 
-Congratulations! You've successfully automated a task that probably would have taken you less time to do manually. But hey, at least now you can brag about using a custom Python script to take screenshots. Your friends will be so impressed.
+1. **Edge Detection**: Uses Sobel filters to detect structural features in images
+2. **Template Matching**: Finds the best overlap region between consecutive screenshots
+3. **Robust Validation**: Ignores dynamic content (cursors, animations) when validating overlaps
+4. **Smart Merging**: Uses hard cuts at overlap centers to avoid ghosting effects
+5. **Live Preview**: Shows real-time results with automatic window resizing
 
-Remember, with great power comes great responsibility. Use this tool wisely, or don't. We're not your boss.
+## Troubleshooting
 
-Happy screenshotting, you lazy genius!
+**Merge failures (red background):**
+- Scroll up slightly to create more overlap
+- Ensure content has visible structure (text, lines, etc.)
+- Avoid areas with only solid colors
+
+**No captures happening:**
+- Wait a full 0.5 seconds after scrolling stops
+- Check that the mouse cursor is over the selected region
+- Verify scroll events are being detected
+
+**Clipboard issues:**
+- Linux: Install `copyq` or `xclip`
+- Windows: Ensure `pywin32` is installed
+
+## Technical Details
+
+- **Debounce Time**: 0.5 seconds after scroll stops
+- **Overlap Detection**: Sobel edge detection with template matching
+- **Validation Threshold**: Ignores worst 20% of pixels to handle dynamic content
+- **Merge Strategy**: Hard cut at overlap center to prevent ghosting
+
+## License
+
+Open source - use responsibly and enjoy your effortless screenshot stitching!
