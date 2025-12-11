@@ -1,3 +1,4 @@
+
 import os
 import numpy as np
 from PIL import Image
@@ -9,66 +10,86 @@ import matplotlib.patches as patches
 from utils import Config
 
 class ImageMerger:
-    @staticmethod
-    def find_fixed_borders(images, margin=5):
-        if not images: return 0, 0, 0, 0
-        rgb_arrays = [np.array(img) for img in images]
-        first_img = rgb_arrays[0]
-        height, width, _ = first_img.shape
-        top = 0
-        bottom = height
 
-        # Top Border
-        for i in range(height // 2):
-            row_is_fixed = True
-            base_row = first_img[i, :, :]
-            for other_img in rgb_arrays[1:]:
-                if np.mean(np.abs(other_img[i, :, :] - base_row)) > margin:
-                    row_is_fixed = False
-                    break
-            if not row_is_fixed:
-                top = i
+    @staticmethod
+    def _calculate_static_bounds(arr1, arr2, threshold=10):
+        """
+        Compares the top and bottom of two images to find static UI elements
+        (Headers, Footers, Navigation bars) that shouldn't be part of matching.
+        """
+        if arr1.shape != arr2.shape:
+            # If shapes differ (base grew), we can only compare the 'original' screen size area.
+            # But simpler: compare row by row until difference is high.
+            h = min(arr1.shape[0], arr2.shape[0])
+        else:
+            h = arr1.shape[0]
+
+        # 1. Top Static Region (Header)
+        top_static = 0
+        for i in range(0, h // 3): # Check top 1/3 max
+            # Compare row i of Base (Top) vs row i of New (Top)
+            # Use arr1[i] vs arr2[i].
+            # Note: For a stitched Base, arr1[0] is the original header.
+            diff = np.mean(np.abs(arr1[i, :, :] - arr2[i, :, :]))
+            if diff < threshold:
+                top_static = i + 1
+            else:
                 break
-        # Bottom Border
-        for i in range(height - 1, height // 2, -1):
-            row_is_fixed = True
-            base_row = first_img[i, :, :]
-            for other_img in rgb_arrays[1:]:
-                if np.mean(np.abs(other_img[i, :, :] - base_row)) > margin:
-                    row_is_fixed = False
-                    break
-            if not row_is_fixed:
-                bottom = i + 1
+
+        # 2. Bottom Static Region (Footer)
+        bottom_static = 0
+        for i in range(1, h // 3):
+            # Compare bottom up
+            base_idx = arr1.shape[0] - i
+            new_idx = arr2.shape[0] - i
+
+            diff = np.mean(np.abs(arr1[base_idx, :, :] - arr2[new_idx, :, :]))
+            if diff < threshold:
+                bottom_static = i
+            else:
                 break
-        if top >= bottom: top, bottom = 0, height
-        return top, bottom, 0, width
+
+        return top_static, bottom_static
 
     @staticmethod
-    def remove_borders(array, top, bottom, left, right):
-        return array[top:bottom, :]
-
-    @staticmethod
-    def compute_overlap_offset(base_img_arr, new_img_arr, debug_id=None, min_overlap=20, search_limit_ratio=1):
+    def compute_overlap_offset(base_img_arr, new_img_arr, crop_top=0, crop_bottom=0, debug_id=None, min_overlap=20, search_limit_ratio=1):
         def to_gray(arr):
             return np.dot(arr[..., :3], [0.2989, 0.5870, 0.1140])
 
         gray_base = to_gray(base_img_arr)
         gray_new = to_gray(new_img_arr)
 
-        # 1. Edge Detection (Sobel)
-        # This is naturally resistant to color changes, only caring about structure.
+        # 1. Edge Detection
         feat_base = sobel(gray_base, axis=0)
         feat_new = sobel(gray_new, axis=0)
 
         h_base, w = feat_base.shape
         h_new, _ = feat_new.shape
 
-        probe_height = int(h_new * 0.15)
+        # --- KEY FIX: Define Probe based on DYNAMIC content only ---
+        # We start the probe AFTER the static header.
+        # We end the probe BEFORE the static footer.
+
+        effective_h_new = h_new - crop_top - crop_bottom
+        if effective_h_new < 50:
+            # Fallback if too much is cropped
+            crop_top = 0
+            crop_bottom = 0
+
+        # Probe size: 15% of the *dynamic* area
+        probe_height = int(effective_h_new * 0.15)
         probe_height = max(probe_height, min_overlap)
-        probe_height = min(probe_height, h_new - 1)
 
-        probe = feat_new[:probe_height, :]
+        # Probe start: Below header
+        probe_y_start = crop_top
+        probe_y_end = probe_y_start + probe_height
 
+        if probe_y_end >= (h_new - crop_bottom):
+             probe_y_end = h_new - crop_bottom - 1
+
+        probe = feat_new[probe_y_start:probe_y_end, :]
+
+        # Search Region: Bottom of base image
         search_height = int(h_base * search_limit_ratio)
         search_start_y = h_base - search_height
         search_region = feat_base[search_start_y:, :]
@@ -79,33 +100,33 @@ class ImageMerger:
         y_match_local, x_match_local = ij
         match_score = result[y_match_local, x_match_local]
 
-        shift = search_start_y + y_match_local
+        # Map back to global coordinates
+        # The match found where 'probe' fits.
+        # Shift = where the top of New Image fits into Base.
+        # matched_y_in_search = y_match_local
+        # matched_y_in_base = search_start_y + y_match_local
+        # This matched_y corresponds to the start of the PROBE (which is at crop_top).
+        # So the top of the NEW image (0) is at matched_y - crop_top.
+
+        match_y_global = search_start_y + y_match_local
+        shift = match_y_global - probe_y_start
+
         overlap_height = h_base - shift
 
         if Config["DEBUG_MODE"]:
             ImageMerger._save_debug_plot(
                 debug_id, gray_base, gray_new, feat_base, feat_new,
-                result, shift, overlap_height, match_score, search_start_y
+                result, shift, overlap_height, match_score, search_start_y,
+                probe_y_start, probe_height
             )
 
-        # Slightly lowered threshold to allow Sobel to find matches even if noise exists
         if match_score < 0.4:
             return None, 0
 
         return shift, overlap_height
 
     @staticmethod
-    def validate_overlap_robust(base_arr, new_arr, shift, overlap_height, tolerance=15.0, ignore_worst_percent=0.20):
-        """
-        Validates overlap by checking if the MAJORITY of pixels match.
-
-        Args:
-            tolerance: The average pixel difference allowed (0-255).
-                       15 is lenient enough for compression artifacts.
-            ignore_worst_percent: The percentage of pixels to IGNORE.
-                                  0.20 means we ignore the 20% most different pixels
-                                  (blinking cursors, spinners, changing numbers).
-        """
+    def validate_overlap_robust(base_arr, new_arr, shift, overlap_height, crop_top=0, crop_bottom=0, tolerance=20.0):
         if overlap_height <= 0: return False
 
         # Extract Overlapping Regions
@@ -114,37 +135,71 @@ class ImageMerger:
 
         if region_base.shape != region_new.shape: return False
 
-        # Convert to Grayscale for simpler math
+        # --- KEY FIX: Mask out Static Header/Footer from Validation ---
+        # If the overlap includes the top of New Image, we must ignore the header
+        # because the Base Image might not have that header at that specific location
+        # (unless Shift==0, which we are trying to avoid).
+
+        # Actually, simpler logic:
+        # We are validating if pixels match.
+        # If we overlap the Header area, and the Header is static, it WILL match.
+        # But we want to know if the *content* matches.
+        # So we slice off the static zones from the calculation.
+
+        valid_start = 0
+        valid_end = region_new.shape[0]
+
+        # If overlap covers the top of New Image, mask the header
+        if valid_start < crop_top:
+            valid_start = crop_top
+
+        # If overlap covers the bottom of New Image, mask the footer
+        # (Though usually overlap is at the top of New)
+        # Note: crop_bottom is from the bottom edge.
+        limit_bottom = new_arr.shape[0] - crop_bottom
+        if overlap_height > limit_bottom:
+            valid_end = limit_bottom
+
+        # Safety: if we cropped everything (overlap is purely inside the header?), fail.
+        if valid_end <= valid_start:
+            # If the overlap is ENTIRELY inside the header, it's ambiguous.
+            # But usually we want to merge content.
+            # If Shift is massive (small overlap) and we are only overlapping the header,
+            # we might return True (technically matches) or False (wait for more content).
+            # Let's be safe and allow it if it's strictly the header, but usually we want content.
+            return True
+
+        # Slice to valid dynamic area
+        v_base = region_base[valid_start:valid_end]
+        v_new = region_new[valid_start:valid_end]
+
         def to_gray(arr): return np.dot(arr[..., :3], [0.2989, 0.5870, 0.1140])
+        r1 = to_gray(v_base)
+        r2 = to_gray(v_new)
 
-        r1 = to_gray(region_base)
-        r2 = to_gray(region_new)
+        sx1, sy1 = sobel(r1, axis=0), sobel(r1, axis=1)
+        sx2, sy2 = sobel(r2, axis=0), sobel(r2, axis=1)
+        mag1 = np.hypot(sx1, sy1)
+        mag2 = np.hypot(sx2, sy2)
 
-        # Calculate Absolute Difference
+        content_mask = (mag1 > 30) | (mag2 > 30)
+
         diff = np.abs(r1 - r2)
 
-        # Flatten to 1D array
-        flat_diff = diff.flatten()
+        total_content_pixels = np.sum(content_mask)
+        total_pixels = r1.size
+        content_ratio = total_content_pixels / total_pixels
 
-        # Determine how many pixels to keep (e.g., keep best 80%)
-        keep_count = int(flat_diff.size * (1.0 - ignore_worst_percent))
+        if content_ratio < 0.01:
+            mean_error = np.mean(diff)
+            return mean_error < 5.0
 
-        if keep_count == 0: return False
+        content_diff = diff[content_mask]
+        median_content_error = np.median(content_diff)
 
-        # Fast partial sort to find the smallest 'keep_count' errors
-        # argpartition puts the smallest K elements at the front (unordered)
-        # This is much faster than a full sort.
-        partitioned_indices = np.argpartition(flat_diff, keep_count)
-        best_pixels = flat_diff[partitioned_indices[:keep_count]]
+        logger.debug(f"Validation (Dynamic Area {valid_start}-{valid_end}): Median Err={median_content_error:.2f}")
 
-        # Calculate the Mean Error of the "Good" pixels
-        mean_error = np.mean(best_pixels)
-
-        logger.debug(f"Robust Validation Error: {mean_error:.2f} (Tolerance: {tolerance})")
-
-        # If the background and static text match (low error), we return True
-        # regardless of what the blinking cursor (high error) is doing.
-        return mean_error < tolerance
+        return median_content_error < tolerance
 
     @staticmethod
     def merge_images_vertically(base_img, new_img, debug_id=None):
@@ -154,38 +209,47 @@ class ImageMerger:
         if base_arr.shape[1] != new_arr.shape[1]:
             return base_img
 
-        shift, overlap_height = ImageMerger.compute_overlap_offset(base_arr, new_arr, debug_id=debug_id)
+        # 1. Detect Static Bars
+        t_crop, b_crop = ImageMerger._calculate_static_bounds(base_arr, new_arr)
+        if t_crop > 0 or b_crop > 0:
+            logger.debug(f"Detected static bars: Top {t_crop}px, Bottom {b_crop}px")
+
+        # 2. Compute Offset (ignoring static bars)
+        shift, overlap_height = ImageMerger.compute_overlap_offset(
+            base_arr, new_arr,
+            crop_top=t_crop,
+            crop_bottom=b_crop,
+            debug_id=debug_id
+        )
 
         if shift is None or overlap_height < 10:
             logger.warning(f"Step {debug_id}: No structure match. Appending.")
             return base_img
-            # return Image.fromarray(np.vstack((base_arr, new_arr)))
 
-        # Use the new Robust Validation
-        is_valid = ImageMerger.validate_overlap_robust(base_arr, new_arr, shift, overlap_height)
+        # 3. Validate (ignoring static bars)
+        is_valid = ImageMerger.validate_overlap_robust(
+            base_arr, new_arr, shift, overlap_height,
+            crop_top=t_crop, crop_bottom=b_crop
+        )
 
         if not is_valid:
-            logger.warning(f"Step {debug_id}: Robust validation failed. Appending.")
+            logger.warning(f"Step {debug_id}: Validation failed.")
             return base_img
-            # return Image.fromarray(np.vstack((base_arr, new_arr)))
 
         logger.info(f"Step {debug_id}: Merging w/ Shift: {shift}, Overlap: {overlap_height}")
 
-        # Use a Hard Cut at the center of the overlap.
-        # Why? Because if we blend, a blinking cursor becomes a ghost cursor.
-        # If we hard cut, we pick one state (either cursor on or off), which looks cleaner.
         cut_point = int(overlap_height / 2)
 
         part_a = base_arr[:shift]
-        part_b_1 = base_arr[shift : shift + cut_point] # From Base
-        part_b_2 = new_arr[cut_point : overlap_height] # From New
+        part_b_1 = base_arr[shift : shift + cut_point]
+        part_b_2 = new_arr[cut_point : overlap_height]
         part_c = new_arr[overlap_height:]
 
         merged = np.vstack((part_a, part_b_1, part_b_2, part_c))
         return Image.fromarray(merged)
 
     @staticmethod
-    def _save_debug_plot(debug_id, gray_base, gray_new, feat_base, feat_new, result, shift, overlap_height, score, search_start_y):
+    def _save_debug_plot(debug_id, gray_base, gray_new, feat_base, feat_new, result, shift, overlap_height, score, search_start_y, probe_y=0, probe_h=0):
         try:
             plt.switch_backend('Agg')
             fig = plt.figure(figsize=(16, 12))
@@ -194,12 +258,16 @@ class ImageMerger:
             # Row 1: Original Images
             ax1 = fig.add_subplot(gs[0, 0])
             ax1.imshow(gray_base, cmap='gray')
-            ax1.set_title(f"Base Image (Gray)\n{gray_base.shape[0]}x{gray_base.shape[1]}")
+            ax1.set_title(f"Base Image\n{gray_base.shape}")
             ax1.axis('off')
 
             ax2 = fig.add_subplot(gs[0, 1])
             ax2.imshow(gray_new, cmap='gray')
-            ax2.set_title(f"New Image (Gray)\n{gray_new.shape[0]}x{gray_new.shape[1]}")
+            # Draw probe box on New Image
+            if probe_h > 0:
+                rect = patches.Rectangle((0, probe_y), gray_new.shape[1], probe_h, linewidth=2, edgecolor='cyan', facecolor='none')
+                ax2.add_patch(rect)
+            ax2.set_title(f"New Image (Probe Cyan)\n{gray_new.shape}")
             ax2.axis('off')
 
             ax3 = fig.add_subplot(gs[0, 2])
@@ -209,77 +277,47 @@ class ImageMerger:
                 if r1.shape == r2.shape:
                     diff = np.abs(r1 - r2)
                     im3 = ax3.imshow(diff, cmap='hot', vmin=0, vmax=50)
-                    ax3.set_title(f"Pixel Difference\nMean: {np.mean(diff):.1f}, Max: {np.max(diff):.1f}")
+                    ax3.set_title(f"Diff (Top of New)")
                     plt.colorbar(im3, ax=ax3, shrink=0.6)
             ax3.axis('off')
 
-            # Row 2: Sobel Edge Features
+            # Row 2: Sobel
             ax4 = fig.add_subplot(gs[1, 0])
-            im4 = ax4.imshow(feat_base, cmap='RdBu_r', vmin=-50, vmax=50)
-            ax4.set_title(f"Base Sobel Edges\nMin: {np.min(feat_base):.1f}, Max: {np.max(feat_base):.1f}")
+            ax4.imshow(feat_base, cmap='RdBu_r', vmin=-50, vmax=50)
+            ax4.set_title("Base Edges")
             ax4.axis('off')
-            plt.colorbar(im4, ax=ax4, shrink=0.6)
 
             ax5 = fig.add_subplot(gs[1, 1])
-            im5 = ax5.imshow(feat_new, cmap='RdBu_r', vmin=-50, vmax=50)
-            ax5.set_title(f"New Sobel Edges\nMin: {np.min(feat_new):.1f}, Max: {np.max(feat_new):.1f}")
+            ax5.imshow(feat_new, cmap='RdBu_r', vmin=-50, vmax=50)
+            ax5.set_title("New Edges")
             ax5.axis('off')
-            plt.colorbar(im5, ax=ax5, shrink=0.6)
 
-            ax6 = fig.add_subplot(gs[1, 2])
-            if overlap_height > 0:
-                feat1 = feat_base[shift : shift + overlap_height]
-                feat2 = feat_new[:overlap_height]
-                if feat1.shape == feat2.shape:
-                    sobel_diff = np.abs(feat1 - feat2)
-                    im6 = ax6.imshow(sobel_diff, cmap='plasma', vmin=0, vmax=30)
-                    ax6.set_title(f"Sobel Difference\nMean: {np.mean(sobel_diff):.1f}, Max: {np.max(sobel_diff):.1f}")
-                    plt.colorbar(im6, ax=ax6, shrink=0.6)
-            ax6.axis('off')
-
-            # Row 3: Template Matching and Overlap Visualization
+            # Row 3: Result
             ax7 = fig.add_subplot(gs[2, 0])
             im7 = ax7.imshow(result, cmap='viridis')
-            ax7.set_title(f"Template Match Result\nScore: {score:.3f}")
-            ax7.axis('off')
+            ax7.set_title(f"Match Result\nScore: {score:.3f}")
             plt.colorbar(im7, ax=ax7, shrink=0.6)
 
             ax8 = fig.add_subplot(gs[2, 1])
-            # Show the search region with match location highlighted
             search_region = feat_base[search_start_y:, :]
             ax8.imshow(search_region, cmap='gray')
             if overlap_height > 0:
-                match_y = shift - search_start_y
-                rect = patches.Rectangle((0, match_y), search_region.shape[1], overlap_height, 
+                # Calculate where the probe matched within the search region
+                match_y_in_search = shift + probe_y - search_start_y
+                rect = patches.Rectangle((0, match_y_in_search), search_region.shape[1], probe_h,
                                        linewidth=2, edgecolor='red', facecolor='none')
                 ax8.add_patch(rect)
-            ax8.set_title(f"Search Region\nShift: {shift}, Overlap: {overlap_height}px")
+            ax8.set_title(f"Search Region (Match Red)")
             ax8.axis('off')
 
             ax9 = fig.add_subplot(gs[2, 2])
-            # Statistics text
-            stats_text = f"""Match Statistics:
-Score: {score:.3f}
-Shift: {shift}px
-Overlap: {overlap_height}px
-Search Start: {search_start_y}px
-
-Image Info:
-Base: {gray_base.shape}
-New: {gray_new.shape}
-
-Sobel Stats:
-Base range: [{np.min(feat_base):.1f}, {np.max(feat_base):.1f}]
-New range: [{np.min(feat_new):.1f}, {np.max(feat_new):.1f}]
-"""
-            ax9.text(0.05, 0.95, stats_text, transform=ax9.transAxes, fontsize=10,
-                    verticalalignment='top', fontfamily='monospace',
-                    bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+            stats = f"Shift: {shift}\nOverlap: {overlap_height}\nProbe Y: {probe_y}\nProbe H: {probe_h}"
+            ax9.text(0.1, 0.5, stats, transform=ax9.transAxes)
             ax9.axis('off')
 
             os.makedirs("debug_output", exist_ok=True)
             plt.tight_layout()
-            plt.savefig(f"debug_output/merge_step_{debug_id}.png", dpi=150, bbox_inches='tight')
+            plt.savefig(f"debug_output/merge_step_{debug_id}.png", dpi=150)
             plt.close(fig)
-        except Exception as e:
-            logger.error(f"Failed to save debug plot: {e}")
+        except Exception:
+            pass
