@@ -3,10 +3,10 @@ import numpy as np
 from PIL import Image
 
 class LivePreviewFrame(wx.Frame):
-    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None):
+    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None):
         # Create a tall, narrow window on the right side
         self.initial_width = 400 if not debug_mode else 500
-        self.initial_height = 700  # Increased to fit new button
+        self.initial_height = 800  # Increased to fit new controls
         self.max_height = screen_height - 100  # Leave some margin
 
         style = wx.STAY_ON_TOP | wx.FRAME_TOOL_WINDOW | wx.CAPTION | wx.RESIZE_BORDER
@@ -15,6 +15,7 @@ class LivePreviewFrame(wx.Frame):
         self.debug_mode = debug_mode
         self.selection_region = selection_region
         self.manual_callback = manual_callback
+        self.undo_callback = undo_callback
 
         # Position relative to selection region
         self._position_window()
@@ -25,20 +26,36 @@ class LivePreviewFrame(wx.Frame):
         # UI Elements
         self.sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # Status Text (Enhanced)
-        self.status_label = wx.StaticText(self.panel, label="Ready...")
-        self.status_label.SetForegroundColour(wx.WHITE)
-        self.status_label.SetBackgroundColour(wx.Colour(60, 60, 60))
-        font = self.status_label.GetFont()
-        font.SetPointSize(font.GetPointSize() + 2)
-        self.status_label.SetFont(font)
-        self.sizer.Add(self.status_label, 0, wx.ALL | wx.EXPAND, 5)
 
-        # Snap Button
+        # Control buttons
+        button_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
         if self.manual_callback:
-            self.snap_button = wx.Button(self.panel, label="Snap / Force Merge")
+            self.snap_button = wx.Button(self.panel, label="Take Screenshot")
             self.snap_button.Bind(wx.EVT_BUTTON, lambda evt: self.manual_callback())
-            self.sizer.Add(self.snap_button, 0, wx.ALL | wx.EXPAND, 5)
+            button_sizer.Add(self.snap_button, 1, wx.ALL | wx.EXPAND, 2)
+        
+        if self.undo_callback:
+            self.undo_button = wx.Button(self.panel, label="Undo Last")
+            self.undo_button.Bind(wx.EVT_BUTTON, lambda evt: self.undo_callback())
+            button_sizer.Add(self.undo_button, 1, wx.ALL | wx.EXPAND, 2)
+        
+        if button_sizer.GetChildren():
+            self.sizer.Add(button_sizer, 0, wx.ALL | wx.EXPAND, 5)
+
+        # Settings Panel (always visible)
+        settings_panel = wx.Panel(self.panel)
+        settings_panel.SetBackgroundColour(wx.Colour(50, 50, 50))
+        settings_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # Scroll Trigger Checkbox
+        self.scroll_trigger_checkbox = wx.CheckBox(settings_panel, label="Auto-capture on scroll")
+        self.scroll_trigger_checkbox.SetForegroundColour(wx.WHITE)
+        self.scroll_trigger_checkbox.SetValue(True)  # Default enabled
+        settings_sizer.Add(self.scroll_trigger_checkbox, 0, wx.ALL, 2)
+
+        settings_panel.SetSizer(settings_sizer)
+        self.sizer.Add(settings_panel, 0, wx.ALL | wx.EXPAND, 5)
 
         # Debug Info Panel (only if debug mode)
         if self.debug_mode:
@@ -66,8 +83,29 @@ class LivePreviewFrame(wx.Frame):
             self.debug_debounce.SetForegroundColour(wx.WHITE)
             debug_sizer.Add(self.debug_debounce, 0, wx.ALL, 2)
 
+            self.debug_static_top = wx.StaticText(self.debug_panel, label="Static Top: 0px")
+            self.debug_static_top.SetForegroundColour(wx.WHITE)
+            debug_sizer.Add(self.debug_static_top, 0, wx.ALL, 2)
+
+            self.debug_static_bottom = wx.StaticText(self.debug_panel, label="Static Bottom: 0px")
+            self.debug_static_bottom.SetForegroundColour(wx.WHITE)
+            debug_sizer.Add(self.debug_static_bottom, 0, wx.ALL, 2)
+
+            # Tolerance Slider (debug only)
+            tolerance_label = wx.StaticText(self.debug_panel, label="Tolerance:")
+            tolerance_label.SetForegroundColour(wx.WHITE)
+            debug_sizer.Add(tolerance_label, 0, wx.ALL, 2)
+            
+            self.tolerance_slider = wx.Slider(self.debug_panel, value=20, minValue=5, maxValue=50, 
+                                            style=wx.SL_HORIZONTAL | wx.SL_LABELS)
+            debug_sizer.Add(self.tolerance_slider, 0, wx.ALL | wx.EXPAND, 2)
+
             self.debug_panel.SetSizer(debug_sizer)
             self.sizer.Add(self.debug_panel, 0, wx.EXPAND | wx.ALL, 5)
+        else:
+            # Create tolerance slider for non-debug mode with default value
+            self.tolerance_slider = wx.Slider(self.panel, value=20, minValue=5, maxValue=50)
+            self.tolerance_slider.Hide()  # Hidden but accessible
 
         # Image Display Area
         self.image_ctrl = wx.StaticBitmap(self.panel)
@@ -80,6 +118,14 @@ class LivePreviewFrame(wx.Frame):
         self.last_static_top = 0
         self.last_static_bottom = 0
         self.Show()
+
+    def get_tolerance(self):
+        """Get current tolerance value from slider"""
+        return self.tolerance_slider.GetValue()
+
+    def get_scroll_trigger_enabled(self):
+        """Get current scroll trigger setting"""
+        return self.scroll_trigger_checkbox.GetValue()
 
     def _position_window(self):
         """Position window relative to selection region"""
@@ -110,7 +156,6 @@ class LivePreviewFrame(wx.Frame):
         """
         Updates the preview with the BOTTOM part of the huge merged image.
         """
-        self.status_label.SetLabel(status)
 
         # Store overlay data
         if debug_info:
@@ -127,6 +172,8 @@ class LivePreviewFrame(wx.Frame):
             self.debug_added.SetLabel(f"Height Added: {debug_info['height_added']}px")
             self.debug_processing.SetLabel(f"Processing Time: {debug_info['processing_time']:.3f}s")
             self.debug_debounce.SetLabel(f"Debounce Time: {debug_info['debounce_time']:.3f}s")
+            self.debug_static_top.SetLabel(f"Static Top: {debug_info['static_top']}px")
+            self.debug_static_bottom.SetLabel(f"Static Bottom: {debug_info['static_bottom']}px")
 
         if success:
             self.panel.SetBackgroundColour("#228B22") # Forest Green
@@ -141,11 +188,11 @@ class LivePreviewFrame(wx.Frame):
         # Calculate how much height we need to show the full image
         required_display_height = int(h * scale)
 
-        # Get current client height (excluding debug panel and status)
+        # Get current client height (excluding debug panel)
         current_client_height = self.GetClientSize().height
         if self.debug_mode:
             current_client_height -= self.debug_panel.GetSize().height
-        current_client_height -= self.status_label.GetSize().height + 20  # margins
+        current_client_height -= 20  # margins
 
         # Resize window if image overflows
         if required_display_height > current_client_height:
@@ -160,7 +207,7 @@ class LivePreviewFrame(wx.Frame):
         client_height = self.GetClientSize().height
         if self.debug_mode:
             client_height -= self.debug_panel.GetSize().height
-        client_height -= self.status_label.GetSize().height + 20
+        client_height -= 120  # Account for buttons and settings panel
 
         view_h_pixels = int(client_height / scale)
 

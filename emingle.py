@@ -22,6 +22,7 @@ setup_logging("DEBUG", {"function": True, "thread": True})
 full_merged_image = None
 capture_running = True
 manual_trigger_event = threading.Event()
+undo_stack = []
 
 def capture_screenshot(monitor):
     with mss.mss() as sct:
@@ -33,8 +34,18 @@ def on_manual_trigger():
     """Callback function for manual trigger button"""
     manual_trigger_event.set()
 
+def on_undo_last():
+    """Callback function for undo last button"""
+    global full_merged_image, undo_stack
+    if undo_stack:
+        full_merged_image = undo_stack.pop()
+        logger.info(f"Undid last merge. Stack size: {len(undo_stack)}")
+        # Update preview window
+        if 'preview_window' in globals():
+            wx.CallAfter(preview_window.update_image, full_merged_image, "Undid last merge", True)
+
 def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
-    global full_merged_image, capture_running
+    global full_merged_image, capture_running, undo_stack
 
     # Configuration
     DEBOUNCE_TIME = 0.5  # Seconds to wait after scrolling stops
@@ -73,7 +84,14 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
             else:
                 scroll_settled = True
 
-        if scroll_settled or manual_triggered:
+        # Check if scroll trigger is enabled for automatic captures
+        scroll_trigger_enabled = True
+        try:
+            scroll_trigger_enabled = preview_window.get_scroll_trigger_enabled()
+        except:
+            pass
+        
+        if (scroll_settled and scroll_trigger_enabled) or manual_triggered:
             # --- CAPTURE TRIGGERED ---
             if manual_triggered:
                 logger.info("Manual trigger detected.")
@@ -91,15 +109,28 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
 
             wx.CallAfter(preview_window.update_image, full_merged_image, "Merging...", True)
 
+            # Get current tolerance setting
+            tolerance = 20  # default
+            try:
+                tolerance = preview_window.get_tolerance()
+            except:
+                pass
+
             # Attempt Merge
             merged_result, merge_metadata = ImageMerger.merge_images_vertically(
                 full_merged_image,
                 new_candidate,
-                debug_id="live"
+                debug_id="live",
+                tolerance=tolerance
             )
 
             if merged_result.height > full_merged_image.height:
-                # Success
+                # Success - save current state to undo stack before updating
+                undo_stack.append(full_merged_image.copy())
+                # Keep undo stack reasonable size
+                if len(undo_stack) > 10:
+                    undo_stack.pop(0)
+                
                 old_height = full_merged_image.height
                 full_merged_image = merged_result
                 logger.success(f"Merged! Total height: {full_merged_image.height}px (Static: top={merge_metadata['static_top']}px, bottom={merge_metadata['static_bottom']}px)")
@@ -156,7 +187,10 @@ def main():
 
     # UI
     app = wx.App(False)
-    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"], selection_region=selection, manual_callback=on_manual_trigger)
+    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"], selection_region=selection, manual_callback=on_manual_trigger, undo_callback=on_undo_last)
+    
+    # Make preview_window globally accessible for undo callback
+    globals()['preview_window'] = preview
 
     # Thread
     t = threading.Thread(
