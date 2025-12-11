@@ -202,7 +202,7 @@ class ImageMerger:
         return median_content_error < tolerance
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img, debug_id=None):
+    def merge_images_vertically(base_img, new_img, debug_id=None, tolerance=20.0):
         base_arr = np.array(base_img)
         new_arr = np.array(new_img)
 
@@ -235,7 +235,7 @@ class ImageMerger:
         # 3. Validate (ignoring static bars)
         is_valid = ImageMerger.validate_overlap_robust(
             base_arr, new_arr, shift, overlap_height,
-            crop_top=t_crop, crop_bottom=b_crop
+            crop_top=t_crop, crop_bottom=b_crop, tolerance=tolerance
         )
 
         if not is_valid:
