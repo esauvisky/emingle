@@ -3,17 +3,18 @@ import numpy as np
 from PIL import Image
 
 class LivePreviewFrame(wx.Frame):
-    def __init__(self, screen_height, debug_mode=False, selection_region=None):
+    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None):
         # Create a tall, narrow window on the right side
         self.initial_width = 400 if not debug_mode else 500
-        self.initial_height = 600
+        self.initial_height = 700  # Increased to fit new button
         self.max_height = screen_height - 100  # Leave some margin
-        
+
         style = wx.STAY_ON_TOP | wx.FRAME_TOOL_WINDOW | wx.CAPTION | wx.RESIZE_BORDER
         super().__init__(None, title="Live Stitcher", size=(self.initial_width, self.initial_height), style=style)
 
         self.debug_mode = debug_mode
         self.selection_region = selection_region
+        self.manual_callback = manual_callback
 
         # Position relative to selection region
         self._position_window()
@@ -24,10 +25,20 @@ class LivePreviewFrame(wx.Frame):
         # UI Elements
         self.sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # Status Text
+        # Status Text (Enhanced)
         self.status_label = wx.StaticText(self.panel, label="Ready...")
         self.status_label.SetForegroundColour(wx.WHITE)
+        self.status_label.SetBackgroundColour(wx.Colour(60, 60, 60))
+        font = self.status_label.GetFont()
+        font.SetPointSize(font.GetPointSize() + 2)
+        self.status_label.SetFont(font)
         self.sizer.Add(self.status_label, 0, wx.ALL | wx.EXPAND, 5)
+
+        # Snap Button
+        if self.manual_callback:
+            self.snap_button = wx.Button(self.panel, label="Snap / Force Merge")
+            self.snap_button.Bind(wx.EVT_BUTTON, lambda evt: self.manual_callback())
+            self.sizer.Add(self.snap_button, 0, wx.ALL | wx.EXPAND, 5)
 
         # Debug Info Panel (only if debug mode)
         if self.debug_mode:
@@ -66,28 +77,30 @@ class LivePreviewFrame(wx.Frame):
 
         self.last_merged_image = None
         self.last_height_added = 0
+        self.last_static_top = 0
+        self.last_static_bottom = 0
         self.Show()
 
     def _position_window(self):
         """Position window relative to selection region"""
         display_width, display_height = wx.DisplaySize()
-        
+
         if self.selection_region:
             sel_right = self.selection_region['left'] + self.selection_region['width']
             sel_top = self.selection_region['top']
-            
+
             # Try to position to the top-right of selection
             pos_x = sel_right + 10
             pos_y = sel_top
-            
+
             # If no space on the right, position to the top-left
             if pos_x + self.initial_width > display_width:
                 pos_x = self.selection_region['left'] - self.initial_width - 10
-                
+
             # Ensure we don't go off screen
             pos_x = max(0, min(pos_x, display_width - self.initial_width))
             pos_y = max(0, min(pos_y, display_height - self.initial_height))
-            
+
             self.SetPosition((pos_x, pos_y))
         else:
             # Fallback to top-right corner
@@ -99,9 +112,14 @@ class LivePreviewFrame(wx.Frame):
         """
         self.status_label.SetLabel(status)
 
-        # Store height added for overlay
-        if debug_info and 'height_added' in debug_info:
-            self.last_height_added = debug_info['height_added']
+        # Store overlay data
+        if debug_info:
+            if 'height_added' in debug_info:
+                self.last_height_added = debug_info['height_added']
+            if 'static_top' in debug_info:
+                self.last_static_top = debug_info['static_top']
+            if 'static_bottom' in debug_info:
+                self.last_static_bottom = debug_info['static_bottom']
 
         # Update debug info if provided
         if self.debug_mode and debug_info:
@@ -119,22 +137,22 @@ class LivePreviewFrame(wx.Frame):
         w, h = pil_image.size
         target_w = self.GetClientSize().width - 10
         scale = target_w / w
-        
+
         # Calculate how much height we need to show the full image
         required_display_height = int(h * scale)
-        
+
         # Get current client height (excluding debug panel and status)
         current_client_height = self.GetClientSize().height
         if self.debug_mode:
             current_client_height -= self.debug_panel.GetSize().height
         current_client_height -= self.status_label.GetSize().height + 20  # margins
-        
+
         # Resize window if image overflows
         if required_display_height > current_client_height:
             new_window_height = min(required_display_height + 100, self.max_height)  # +100 for UI elements
             if self.debug_mode:
                 new_window_height += self.debug_panel.GetSize().height
-            
+
             current_size = self.GetSize()
             self.SetSize((current_size.width, new_window_height))
 
@@ -143,9 +161,9 @@ class LivePreviewFrame(wx.Frame):
         if self.debug_mode:
             client_height -= self.debug_panel.GetSize().height
         client_height -= self.status_label.GetSize().height + 20
-        
+
         view_h_pixels = int(client_height / scale)
-        
+
         # Show bottom portion if image is too tall
         if h > view_h_pixels:
             crop_top = h - view_h_pixels
@@ -159,11 +177,12 @@ class LivePreviewFrame(wx.Frame):
         disp_h = int(crop.height * scale)
         img_resized = crop.resize((disp_w, disp_h), Image.Resampling.BOX)
 
-        # 4. Add overlay for newly added pixels
+        # 4. Add overlays for newly added pixels and static borders
+        img_with_overlay = img_resized
         if success and self.last_height_added > 0:
-            img_with_overlay = self._add_overlay(img_resized, crop_top, h, scale)
-        else:
-            img_with_overlay = img_resized
+            img_with_overlay = self._add_new_pixels_overlay(img_with_overlay, crop_top, h, scale)
+        if success and (self.last_static_top > 0 or self.last_static_bottom > 0):
+            img_with_overlay = self._add_static_borders_overlay(img_with_overlay, crop_top, h, scale)
 
         # 5. Convert to WX Bitmap
         wx_img = wx.Image(img_with_overlay.width, img_with_overlay.height)
@@ -176,35 +195,89 @@ class LivePreviewFrame(wx.Frame):
         # Return color to black after a moment (Visual flash effect)
         wx.CallLater(500, self.panel.Refresh)
 
-    def _add_overlay(self, img_resized, crop_top, original_height, scale):
+    def _add_new_pixels_overlay(self, img_resized, crop_top, original_height, scale):
         """Add a colored overlay to highlight the newly added pixels"""
         from PIL import Image, ImageDraw
-        
+
         # Calculate where the new pixels are in the cropped/scaled image
         new_pixels_height_scaled = int(self.last_height_added * scale)
-        
+
         # The new pixels are at the bottom of the original image
         new_pixels_start_original = original_height - self.last_height_added
-        
+
         # Check if the new pixels are visible in our crop
         if new_pixels_start_original >= crop_top:
             # New pixels are visible
             new_pixels_start_in_crop = new_pixels_start_original - crop_top
             new_pixels_start_scaled = int(new_pixels_start_in_crop * scale)
-            
+
             # Create overlay
             overlay = Image.new('RGBA', img_resized.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
-            
+
             # Draw semi-transparent rectangle over new pixels
             draw.rectangle([
                 (0, new_pixels_start_scaled),
                 (img_resized.width, img_resized.height)
             ], fill=(255, 255, 0, 80))  # Yellow with transparency
-            
+
             # Composite overlay onto image
             img_rgba = img_resized.convert('RGBA')
             result = Image.alpha_composite(img_rgba, overlay)
             return result.convert('RGB')
-        
+
         return img_resized
+
+    def _add_static_borders_overlay(self, img_resized, crop_top, original_height, scale):
+        """Add colored overlays to highlight static top/bottom borders"""
+        from PIL import Image, ImageDraw
+
+        # Create overlay
+        overlay = Image.new('RGBA', img_resized.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # Static top border (red)
+        if self.last_static_top > 0:
+            # The static top is at the bottom of the merged image (where new content was added)
+            # It corresponds to the top of the newly captured slice
+            static_top_start_original = original_height - self.last_height_added
+            static_top_end_original = static_top_start_original + self.last_static_top
+
+            # Check if visible in our crop
+            if static_top_start_original >= crop_top and static_top_end_original > crop_top:
+                start_in_crop = max(0, static_top_start_original - crop_top)
+                end_in_crop = min(img_resized.height / scale, static_top_end_original - crop_top)
+
+                start_scaled = int(start_in_crop * scale)
+                end_scaled = int(end_in_crop * scale)
+
+                if end_scaled > start_scaled:
+                    draw.rectangle([
+                        (0, start_scaled),
+                        (img_resized.width, end_scaled)
+                    ], fill=(255, 0, 0, 60))  # Red with transparency
+
+        # Static bottom border (blue)
+        if self.last_static_bottom > 0:
+            # The static bottom is at the very bottom of the newly added content
+            static_bottom_start_original = original_height - self.last_static_bottom
+            static_bottom_end_original = original_height
+
+            # Check if visible in our crop
+            if static_bottom_start_original >= crop_top and static_bottom_end_original > crop_top:
+                start_in_crop = max(0, static_bottom_start_original - crop_top)
+                end_in_crop = min(img_resized.height / scale, static_bottom_end_original - crop_top)
+
+                start_scaled = int(start_in_crop * scale)
+                end_scaled = int(end_in_crop * scale)
+
+                if end_scaled > start_scaled:
+                    draw.rectangle([
+                        (0, start_scaled),
+                        (img_resized.width, end_scaled)
+                    ], fill=(0, 0, 255, 60))  # Blue with transparency
+
+        # Composite overlay onto image
+        img_rgba = img_resized.convert('RGBA')
+        result = Image.alpha_composite(img_rgba, overlay)
+        return result.convert('RGB')

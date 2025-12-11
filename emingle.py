@@ -21,12 +21,17 @@ setup_logging("DEBUG", {"function": True, "thread": True})
 # Global State
 full_merged_image = None
 capture_running = True
+manual_trigger_event = threading.Event()
 
 def capture_screenshot(monitor):
     with mss.mss() as sct:
         sct_img = sct.grab(monitor)
         img = Image.frombytes('RGB', sct_img.size, sct_img.rgb)
         return img
+
+def on_manual_trigger():
+    """Callback function for manual trigger button"""
+    manual_trigger_event.set()
 
 def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
     global full_merged_image, capture_running
@@ -53,6 +58,10 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
         # Logic:
         # 1. Has there been a scroll AFTER our last processing?
         # 2. Has enough time passed since that scroll (is it settled)?
+        # 3. OR has manual trigger been activated?
+
+        manual_triggered = manual_trigger_event.is_set()
+        scroll_settled = False
 
         if last_scroll > last_processed_time:
             time_since_scroll = now - last_scroll
@@ -62,43 +71,56 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
                 # wx.CallAfter(preview_window.status_label.SetLabel, "Settling...")
                 pass
             else:
-                # --- DEBOUNCE TRIGGERED ---
+                scroll_settled = True
+
+        if scroll_settled or manual_triggered:
+            # --- CAPTURE TRIGGERED ---
+            if manual_triggered:
+                logger.info("Manual trigger detected.")
+                manual_trigger_event.clear()
+                wx.CallAfter(preview_window.update_image, full_merged_image, "Capturing...", True)
+            else:
                 logger.info(f"Scroll settled ({time_since_scroll:.2f}s). Capturing...")
 
-                # Update timestamp immediately to prevent double triggers
-                # This ensures debounce only counts time between scrolls, not processing time
+            # Update timestamp immediately to prevent double triggers
+            if scroll_settled:
                 last_processed_time = last_scroll
 
-                new_candidate = capture_screenshot(region)
+            wx.CallAfter(preview_window.update_image, full_merged_image, "Capturing...", True)
+            new_candidate = capture_screenshot(region)
 
-                # Attempt Merge
-                merged_result = ImageMerger.merge_images_vertically(
-                    full_merged_image,
-                    new_candidate,
-                    debug_id="live"
-                )
+            wx.CallAfter(preview_window.update_image, full_merged_image, "Merging...", True)
 
-                if merged_result.height > full_merged_image.height:
-                    # Success
-                    old_height = full_merged_image.height
-                    full_merged_image = merged_result
-                    logger.success(f"Merged! Total height: {full_merged_image.height}px")
+            # Attempt Merge
+            merged_result, merge_metadata = ImageMerger.merge_images_vertically(
+                full_merged_image,
+                new_candidate,
+                debug_id="live"
+            )
 
-                    # Pass debug info if in debug mode
-                    debug_info = None
-                    if Config["DEBUG_MODE"]:
-                        debug_info = {
-                            'total_height': full_merged_image.height,
-                            'height_added': full_merged_image.height - old_height,
-                            'processing_time': time.time() - last_scroll,
-                            'debounce_time': time_since_scroll
-                        }
+            if merged_result.height > full_merged_image.height:
+                # Success
+                old_height = full_merged_image.height
+                full_merged_image = merged_result
+                logger.success(f"Merged! Total height: {full_merged_image.height}px (Static: top={merge_metadata['static_top']}px, bottom={merge_metadata['static_bottom']}px)")
 
-                    wx.CallAfter(preview_window.update_image, full_merged_image, "Merged! Keep scrolling.", True, debug_info)
-                else:
-                    # Fail
-                    logger.warning("Merge failed (No overlap).")
-                    wx.CallAfter(preview_window.update_image, full_merged_image, "MISMATCH! Scroll UP slightly.", False)
+                # Pass debug info if in debug mode
+                debug_info = None
+                if Config["DEBUG_MODE"]:
+                    debug_info = {
+                        'total_height': full_merged_image.height,
+                        'height_added': full_merged_image.height - old_height,
+                        'processing_time': time.time() - last_scroll,
+                        'debounce_time': time_since_scroll,
+                        'static_top': merge_metadata['static_top'],
+                        'static_bottom': merge_metadata['static_bottom']
+                    }
+
+                wx.CallAfter(preview_window.update_image, full_merged_image, "Merged! Keep scrolling.", True, debug_info)
+            else:
+                # Fail
+                logger.warning("Merge failed (No overlap).")
+                wx.CallAfter(preview_window.update_image, full_merged_image, "MISMATCH! Scroll UP slightly.", False)
 
         time.sleep(0.01)
 
@@ -134,7 +156,7 @@ def main():
 
     # UI
     app = wx.App(False)
-    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"], selection_region=selection)
+    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"], selection_region=selection, manual_callback=on_manual_trigger)
 
     # Thread
     t = threading.Thread(

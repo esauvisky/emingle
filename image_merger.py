@@ -224,7 +224,13 @@ class ImageMerger:
 
         if shift is None or overlap_height < 10:
             logger.warning(f"Step {debug_id}: No structure match. Appending.")
-            return base_img
+            metadata = {
+                'static_top': t_crop,
+                'static_bottom': b_crop,
+                'overlap_height': 0,
+                'shift': None
+            }
+            return base_img, metadata
 
         # 3. Validate (ignoring static bars)
         is_valid = ImageMerger.validate_overlap_robust(
@@ -234,7 +240,13 @@ class ImageMerger:
 
         if not is_valid:
             logger.warning(f"Step {debug_id}: Validation failed.")
-            return base_img
+            metadata = {
+                'static_top': t_crop,
+                'static_bottom': b_crop,
+                'overlap_height': overlap_height,
+                'shift': shift
+            }
+            return base_img, metadata
 
         logger.info(f"Step {debug_id}: Merging w/ Shift: {shift}, Overlap: {overlap_height}")
 
@@ -246,7 +258,13 @@ class ImageMerger:
         part_c = new_arr[overlap_height:]
 
         merged = np.vstack((part_a, part_b_1, part_b_2, part_c))
-        return Image.fromarray(merged)
+        metadata = {
+            'static_top': t_crop,
+            'static_bottom': b_crop,
+            'overlap_height': overlap_height,
+            'shift': shift
+        }
+        return Image.fromarray(merged), metadata
 
     @staticmethod
     def _save_debug_plot(debug_id, gray_base, gray_new, feat_base, feat_new, result, shift, overlap_height, score, search_start_y, probe_y=0, probe_h=0):
