@@ -23,6 +23,7 @@ full_merged_image = None
 capture_running = True
 manual_trigger_event = threading.Event()
 undo_stack = []
+successful_merge_count = 0
 
 def _capture_screen_region(monitor):
     with mss.mss() as sct:
@@ -89,13 +90,22 @@ def on_undo_last():
         if 'preview_window' in globals():
             wx.CallAfter(preview_window.update_image, full_merged_image, "Undid last merge", True)
 
+def on_cancel():
+    """Callback function for explicit cancel action"""
+    if 'keyboard_listener' in globals():
+        keyboard_listener.request_exit("cancelled")
+
 def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
-    global full_merged_image, capture_running, undo_stack
+    global full_merged_image, capture_running, undo_stack, successful_merge_count
 
     # Configuration
     DEBOUNCE_TIME = 0.5  # Seconds to wait after scrolling stops
 
     logger.info("Step 1: Capturing initial base image...")
+
+    if keyboard_listener.exit_event:
+        wx.CallAfter(wx.GetApp().ExitMainLoop)
+        return
 
     # 1. Initial Capture
     base_img = capture_screenshot(region, preview_window)
@@ -178,6 +188,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
                 
                 old_height = full_merged_image.height
                 full_merged_image = merged_result
+                successful_merge_count += 1
                 logger.success(f"Merged! Total height: {full_merged_image.height}px (Static: top={merge_metadata['static_top']}px, bottom={merge_metadata['static_bottom']}px)")
 
                 # Pass debug info if in debug mode
@@ -201,13 +212,21 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
         time.sleep(0.01)
 
     # --- FINALIZATION ---
-    if full_merged_image:
+    should_copy = (
+        full_merged_image is not None and
+        successful_merge_count > 0 and
+        keyboard_listener.exit_reason != "cancelled"
+    )
+
+    if should_copy:
         logger.info("Copying to clipboard...")
         wx.CallAfter(preview_window.update_image, full_merged_image, "Copied to Clipboard!", True)
         ClipboardManager.copy_image_to_clipboard(full_merged_image)
 
         if Config["DEBUG_MODE"]:
             full_merged_image.show()
+    else:
+        logger.info("Exiting without copying stitched output.")
 
     wx.CallAfter(wx.GetApp().ExitMainLoop)
 
@@ -226,13 +245,21 @@ def main():
     # Start Listeners
     key_listener = KeyboardListener()
     key_listener.start()
+    globals()['keyboard_listener'] = key_listener
 
     mouse_listener = MouseScrollListener(key_listener)
     mouse_listener.start()
 
     # UI
     app = wx.App(False)
-    preview = LivePreviewFrame(selection['height'], debug_mode=Config["DEBUG_MODE"], selection_region=selection, manual_callback=on_manual_trigger, undo_callback=on_undo_last)
+    preview = LivePreviewFrame(
+        selection['height'],
+        debug_mode=Config["DEBUG_MODE"],
+        selection_region=selection,
+        manual_callback=on_manual_trigger,
+        undo_callback=on_undo_last,
+        cancel_callback=on_cancel,
+    )
     
     # Make preview_window globally accessible for undo callback
     globals()['preview_window'] = preview

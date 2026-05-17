@@ -6,10 +6,15 @@ from pynput import keyboard, mouse
 class KeyboardListener:
     def __init__(self):
         self.exit_event = False
+        self.exit_reason = None
 
     def start(self):
         listener_thread = Thread(target=self._listen_keyboard, daemon=True)
         listener_thread.start()
+
+    def request_exit(self, reason="escape"):
+        self.exit_reason = reason
+        self.exit_event = True
 
     def _listen_keyboard(self):
         with keyboard.Listener(on_press=self._on_press) as listener:
@@ -18,7 +23,7 @@ class KeyboardListener:
     def _on_press(self, key):
         try:
             if key == keyboard.Key.esc:
-                self.exit_event = True
+                self.request_exit("escape")
                 logger.info("Escape key pressed. Exiting...")
                 return False
         except AttributeError:

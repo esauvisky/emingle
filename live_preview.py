@@ -3,7 +3,7 @@ import numpy as np
 from PIL import Image
 
 class LivePreviewFrame(wx.Frame):
-    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None):
+    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None):
         # Geometry defaults are refined after controls exist and displays are inspected.
         self.initial_width = 400 if not debug_mode else 500
         self.initial_height = 800  # Increased to fit new controls
@@ -19,6 +19,7 @@ class LivePreviewFrame(wx.Frame):
         self.selection_region = selection_region
         self.manual_callback = manual_callback
         self.undo_callback = undo_callback
+        self.cancel_callback = cancel_callback
         self._capture_hidden = False
         self._capture_restore_position = None
 
@@ -41,6 +42,11 @@ class LivePreviewFrame(wx.Frame):
             self.undo_button = wx.Button(self.panel, label="Undo Last")
             self.undo_button.Bind(wx.EVT_BUTTON, lambda evt: self.undo_callback())
             button_sizer.Add(self.undo_button, 1, wx.ALL | wx.EXPAND, 2)
+
+        if self.cancel_callback:
+            self.cancel_button = wx.Button(self.panel, label="Cancel")
+            self.cancel_button.Bind(wx.EVT_BUTTON, lambda evt: self.cancel_callback())
+            button_sizer.Add(self.cancel_button, 1, wx.ALL | wx.EXPAND, 2)
         
         if button_sizer.GetChildren():
             self.sizer.Add(button_sizer, 0, wx.ALL | wx.EXPAND, 5)

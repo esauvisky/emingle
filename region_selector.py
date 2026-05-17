@@ -26,10 +26,12 @@ class RegionSelector:
                 self.Bind(wx.EVT_LEFT_UP, self.OnLeftUp)
                 self.Bind(wx.EVT_PAINT, self.OnPaint)
                 self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
+                self.Bind(wx.EVT_CHAR_HOOK, self.OnCharHook)
 
                 self.start_pos = None
                 self.end_pos = None
                 self.ShowFullScreen(True)
+                self.SetFocus()
 
             def OnLeftDown(self, event):
                 self.start_pos = event.GetPosition()
@@ -58,6 +60,14 @@ class RegionSelector:
 
             def OnEraseBackground(self, event):
                 pass  # Prevent flickering
+
+            def OnCharHook(self, event):
+                if event.GetKeyCode() == wx.WXK_ESCAPE:
+                    if self.HasCapture():
+                        self.ReleaseMouse()
+                    self.Close()
+                    return
+                event.Skip()
 
             def CaptureSelection(self):
                 left = min(self.start_pos.x, self.end_pos.x)
