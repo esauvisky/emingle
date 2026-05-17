@@ -4,10 +4,13 @@ from PIL import Image
 
 class LivePreviewFrame(wx.Frame):
     def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None):
-        # Create a tall, narrow window on the right side
+        # Geometry defaults are refined after controls exist and displays are inspected.
         self.initial_width = 400 if not debug_mode else 500
         self.initial_height = 800  # Increased to fit new controls
         self.max_height = screen_height - 100  # Leave some margin
+        self.preview_margin = 16
+        self.min_preview_image_width = 280
+        self.min_preview_image_height = 220
 
         style = wx.STAY_ON_TOP | wx.FRAME_TOOL_WINDOW | wx.CAPTION | wx.RESIZE_BORDER
         super().__init__(None, title="Live Stitcher", size=(self.initial_width, self.initial_height), style=style)
@@ -18,9 +21,6 @@ class LivePreviewFrame(wx.Frame):
         self.undo_callback = undo_callback
         self._capture_hidden = False
         self._capture_restore_position = None
-
-        # Position relative to selection region
-        self._position_window()
 
         self.panel = wx.Panel(self)
         self.panel.SetBackgroundColour(wx.BLACK)
@@ -120,7 +120,8 @@ class LivePreviewFrame(wx.Frame):
         self.last_static_top = 0
         self.last_static_bottom = 0
         self.Show()
-        self.ensure_safe_position()
+        self.panel.Layout()
+        self._apply_initial_geometry()
 
     def get_tolerance(self):
         """Get current tolerance value from slider"""
@@ -129,31 +130,6 @@ class LivePreviewFrame(wx.Frame):
     def get_scroll_trigger_enabled(self):
         """Get current scroll trigger setting"""
         return self.scroll_trigger_checkbox.GetValue()
-
-    def _position_window(self):
-        """Position window relative to selection region"""
-        display_width, display_height = wx.DisplaySize()
-
-        if self.selection_region:
-            sel_right = self.selection_region['left'] + self.selection_region['width']
-            sel_top = self.selection_region['top']
-
-            # Try to position to the top-right of selection
-            pos_x = sel_right + 10
-            pos_y = sel_top
-
-            # If no space on the right, position to the top-left
-            if pos_x + self.initial_width > display_width:
-                pos_x = self.selection_region['left'] - self.initial_width - 10
-
-            # Ensure we don't go off screen
-            pos_x = max(0, min(pos_x, display_width - self.initial_width))
-            pos_y = max(0, min(pos_y, display_height - self.initial_height))
-
-            self.SetPosition((pos_x, pos_y))
-        else:
-            # Fallback to top-right corner
-            self.SetPosition((display_width - self.initial_width - 50, 50))
 
     def _region_to_rect(self, region=None):
         region = region or self.selection_region
@@ -182,141 +158,201 @@ class LivePreviewFrame(wx.Frame):
     def _build_rect(self, x, y, width, height):
         return wx.Rect(int(x), int(y), int(width), int(height))
 
+    def _rect_intersection(self, rect_a, rect_b):
+        if rect_a is None or rect_b is None or not self._rect_intersects(rect_a, rect_b):
+            return None
+
+        left = max(rect_a.x, rect_b.x)
+        top = max(rect_a.y, rect_b.y)
+        right = min(rect_a.x + rect_a.width, rect_b.x + rect_b.width)
+        bottom = min(rect_a.y + rect_a.height, rect_b.y + rect_b.height)
+        return wx.Rect(left, top, right - left, bottom - top)
+
     def _get_display_rects(self):
         rects = []
         for idx in range(wx.Display.GetCount()):
             rects.append(wx.Display(idx).GetClientArea())
         return rects
 
-    def _add_candidate_rect(self, candidates, seen_positions, display_rect, x, y, width, height, priority, selection_rect):
-        if width > display_rect.width or height > display_rect.height:
+    def _add_candidate_area(self, areas, seen_keys, rect, display_index):
+        if rect.width <= 0 or rect.height <= 0:
             return
 
-        max_x = display_rect.x + display_rect.width - width
-        max_y = display_rect.y + display_rect.height - height
-        clamped_x = max(display_rect.x, min(int(x), max_x))
-        clamped_y = max(display_rect.y, min(int(y), max_y))
-        key = (clamped_x, clamped_y)
-        if key in seen_positions:
+        key = (rect.x, rect.y, rect.width, rect.height)
+        if key in seen_keys:
             return
-        seen_positions.add(key)
+        seen_keys.add(key)
+        areas.append((display_index, rect))
 
-        candidate = self._build_rect(clamped_x, clamped_y, width, height)
-        if not self._rect_within(candidate, display_rect):
-            return
-        if self._rect_intersects(candidate, selection_rect):
-            return
+    def _get_non_overlapping_areas(self, selection_rect):
+        areas = []
+        seen_keys = set()
+        for display_index, display_rect in enumerate(self._get_display_rects()):
+            usable_rect = wx.Rect(
+                display_rect.x + self.preview_margin,
+                display_rect.y + self.preview_margin,
+                max(0, display_rect.width - (self.preview_margin * 2)),
+                max(0, display_rect.height - (self.preview_margin * 2)),
+            )
+            if usable_rect.width <= 0 or usable_rect.height <= 0:
+                continue
 
+            overlap = self._rect_intersection(usable_rect, selection_rect)
+            if overlap is None:
+                self._add_candidate_area(areas, seen_keys, usable_rect, display_index)
+                continue
+
+            self._add_candidate_area(
+                areas,
+                seen_keys,
+                wx.Rect(usable_rect.x, usable_rect.y, overlap.x - usable_rect.x, usable_rect.height),
+                display_index,
+            )
+            self._add_candidate_area(
+                areas,
+                seen_keys,
+                wx.Rect(overlap.x + overlap.width, usable_rect.y,
+                        (usable_rect.x + usable_rect.width) - (overlap.x + overlap.width), usable_rect.height),
+                display_index,
+            )
+            self._add_candidate_area(
+                areas,
+                seen_keys,
+                wx.Rect(usable_rect.x, usable_rect.y, usable_rect.width, overlap.y - usable_rect.y),
+                display_index,
+            )
+            self._add_candidate_area(
+                areas,
+                seen_keys,
+                wx.Rect(usable_rect.x, overlap.y + overlap.height, usable_rect.width,
+                        (usable_rect.y + usable_rect.height) - (overlap.y + overlap.height)),
+                display_index,
+            )
+
+        return areas
+
+    def _get_frame_overhead(self):
+        frame_size = self.GetSize()
+        client_size = self.GetClientSize()
+        frame_extra_w = max(0, frame_size.width - client_size.width)
+        frame_extra_h = max(0, frame_size.height - client_size.height)
+
+        controls_height = 0
+        for child in self.panel.GetChildren():
+            if child is self.image_ctrl:
+                continue
+            best = child.GetBestSize()
+            controls_height += best.height
+        controls_height += 30  # panel padding and inter-section spacing
+
+        return frame_extra_w, frame_extra_h, controls_height
+
+    def _fit_preview_image_size(self, free_rect):
+        selection_rect = self._region_to_rect()
+        if selection_rect is None or selection_rect.width <= 0 or selection_rect.height <= 0:
+            return None
+
+        frame_extra_w, frame_extra_h, controls_height = self._get_frame_overhead()
+        image_max_w = free_rect.width - frame_extra_w - 12
+        image_max_h = free_rect.height - frame_extra_h - controls_height
+        if image_max_w <= 0 or image_max_h <= 0:
+            return None
+
+        source_aspect = selection_rect.width / selection_rect.height
+        image_w = min(image_max_w, int(image_max_h * source_aspect))
+        image_h = int(image_w / source_aspect) if source_aspect else image_max_h
+
+        if image_h > image_max_h:
+            image_h = image_max_h
+            image_w = int(image_h * source_aspect)
+
+        if image_w < self.min_preview_image_width or image_h < self.min_preview_image_height:
+            return None
+
+        window_w = image_w + frame_extra_w + 12
+        window_h = image_h + frame_extra_h + controls_height
+        return window_w, window_h, image_w * image_h
+
+    def _score_area(self, free_rect, window_w, window_h, selection_rect):
         selection_center_x = selection_rect.x + (selection_rect.width / 2)
         selection_center_y = selection_rect.y + (selection_rect.height / 2)
-        candidate_center_x = candidate.x + (candidate.width / 2)
-        candidate_center_y = candidate.y + (candidate.height / 2)
-        distance = abs(candidate_center_x - selection_center_x) + abs(candidate_center_y - selection_center_y)
-        score = (priority * 1000000) + distance
-        candidates.append((score, candidate))
+        area_center_x = free_rect.x + (free_rect.width / 2)
+        area_center_y = free_rect.y + (free_rect.height / 2)
+        distance = abs(area_center_x - selection_center_x) + abs(area_center_y - selection_center_y)
+
+        if free_rect.x >= selection_rect.x + selection_rect.width:
+            placement_bias = 3
+        elif free_rect.x + free_rect.width <= selection_rect.x:
+            placement_bias = 2
+        elif free_rect.y + free_rect.height <= selection_rect.y:
+            placement_bias = 1
+        elif free_rect.y >= selection_rect.y + selection_rect.height:
+            placement_bias = 0
+        else:
+            placement_bias = -1
+
+        return (placement_bias, -distance, free_rect.width * free_rect.height, window_w * window_h)
+
+    def _place_window_in_area(self, free_rect, window_w, window_h, selection_rect):
+        if free_rect.x >= selection_rect.x + selection_rect.width:
+            pos_x = free_rect.x
+            pos_y = max(free_rect.y, min(selection_rect.y, free_rect.y + free_rect.height - window_h))
+        elif free_rect.x + free_rect.width <= selection_rect.x:
+            pos_x = free_rect.x + free_rect.width - window_w
+            pos_y = max(free_rect.y, min(selection_rect.y, free_rect.y + free_rect.height - window_h))
+        elif free_rect.y + free_rect.height <= selection_rect.y:
+            pos_x = max(free_rect.x, min(selection_rect.x, free_rect.x + free_rect.width - window_w))
+            pos_y = free_rect.y + free_rect.height - window_h
+        elif free_rect.y >= selection_rect.y + selection_rect.height:
+            pos_x = max(free_rect.x, min(selection_rect.x, free_rect.x + free_rect.width - window_w))
+            pos_y = free_rect.y
+        else:
+            pos_x = free_rect.x + max(0, (free_rect.width - window_w) // 2)
+            pos_y = free_rect.y + max(0, (free_rect.height - window_h) // 2)
+
+        pos_x = max(free_rect.x, min(pos_x, free_rect.x + free_rect.width - window_w))
+        pos_y = max(free_rect.y, min(pos_y, free_rect.y + free_rect.height - window_h))
+        return int(pos_x), int(pos_y)
 
     def _find_safe_preview_rect(self):
         selection_rect = self._region_to_rect()
         if selection_rect is None:
             return None
 
-        margin = 10
-        window_size = self.GetSize()
-        width, height = window_size.width, window_size.height
-        candidates = []
-        seen_positions = set()
+        best_candidate = None
+        best_score = None
+        for _, free_rect in self._get_non_overlapping_areas(selection_rect):
+            fitted = self._fit_preview_image_size(free_rect)
+            if fitted is None:
+                continue
+            window_w, window_h, image_area = fitted
+            pos_x, pos_y = self._place_window_in_area(free_rect, window_w, window_h, selection_rect)
+            candidate_rect = wx.Rect(pos_x, pos_y, window_w, window_h)
+            if self._rect_intersects(candidate_rect, selection_rect):
+                continue
 
-        vertical_positions = (
-            selection_rect.y,
-            selection_rect.y + selection_rect.height - height,
-            selection_rect.y + ((selection_rect.height - height) // 2),
-        )
-        horizontal_positions = (
-            selection_rect.x,
-            selection_rect.x + selection_rect.width - width,
-            selection_rect.x + ((selection_rect.width - width) // 2),
-        )
+            score = (image_area,) + self._score_area(free_rect, window_w, window_h, selection_rect)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_candidate = candidate_rect
 
-        for display_rect in self._get_display_rects():
-            for pos_y in vertical_positions:
-                self._add_candidate_rect(
-                    candidates,
-                    seen_positions,
-                    display_rect,
-                    selection_rect.x + selection_rect.width + margin,
-                    pos_y,
-                    width,
-                    height,
-                    priority=0,
-                    selection_rect=selection_rect,
-                )
-                self._add_candidate_rect(
-                    candidates,
-                    seen_positions,
-                    display_rect,
-                    selection_rect.x - width - margin,
-                    pos_y,
-                    width,
-                    height,
-                    priority=1,
-                    selection_rect=selection_rect,
-                )
-
-            for pos_x in horizontal_positions:
-                self._add_candidate_rect(
-                    candidates,
-                    seen_positions,
-                    display_rect,
-                    pos_x,
-                    selection_rect.y - height - margin,
-                    width,
-                    height,
-                    priority=2,
-                    selection_rect=selection_rect,
-                )
-                self._add_candidate_rect(
-                    candidates,
-                    seen_positions,
-                    display_rect,
-                    pos_x,
-                    selection_rect.y + selection_rect.height + margin,
-                    width,
-                    height,
-                    priority=3,
-                    selection_rect=selection_rect,
-                )
-
-            corner_positions = (
-                (display_rect.x, display_rect.y),
-                (display_rect.x + display_rect.width - width, display_rect.y),
-                (display_rect.x, display_rect.y + display_rect.height - height),
-                (display_rect.x + display_rect.width - width, display_rect.y + display_rect.height - height),
-            )
-            for pos_x, pos_y in corner_positions:
-                self._add_candidate_rect(
-                    candidates,
-                    seen_positions,
-                    display_rect,
-                    pos_x,
-                    pos_y,
-                    width,
-                    height,
-                    priority=4,
-                    selection_rect=selection_rect,
-                )
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda item: item[0])
-        return candidates[0][1]
+        return best_candidate
 
     def ensure_safe_position(self):
         safe_rect = self._find_safe_preview_rect()
         if safe_rect is None:
             return False
+        self.SetSize((safe_rect.width, safe_rect.height))
         self.SetPosition((safe_rect.x, safe_rect.y))
         return True
+
+    def _apply_initial_geometry(self):
+        if not self.ensure_safe_position():
+            display_width, display_height = wx.DisplaySize()
+            fallback_x = max(self.preview_margin, display_width - self.initial_width - self.preview_margin)
+            fallback_y = self.preview_margin
+            self.SetSize((self.initial_width, self.initial_height))
+            self.SetPosition((fallback_x, fallback_y))
 
     def get_window_rect(self):
         return self.GetScreenRect()
