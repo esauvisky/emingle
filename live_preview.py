@@ -119,6 +119,15 @@ class LivePreviewFrame(wx.Frame):
         self.image_ctrl = wx.StaticBitmap(self.panel)
         self.sizer.Add(self.image_ctrl, 1, wx.EXPAND | wx.ALL, 5)
 
+        self.status_panel = wx.Panel(self.panel)
+        self.status_panel.SetBackgroundColour(wx.Colour(28, 28, 28))
+        status_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.status_text = wx.StaticText(self.status_panel, label="Capture: starting\nMerge: idle")
+        self.status_text.SetForegroundColour(wx.WHITE)
+        status_sizer.Add(self.status_text, 0, wx.ALL | wx.EXPAND, 6)
+        self.status_panel.SetSizer(status_sizer)
+        self.sizer.Add(self.status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
         self.panel.SetSizer(self.sizer)
 
         self.last_merged_image = None
@@ -136,6 +145,41 @@ class LivePreviewFrame(wx.Frame):
     def get_scroll_trigger_enabled(self):
         """Get current scroll trigger setting"""
         return self.scroll_trigger_checkbox.GetValue()
+
+    def update_status(self, status_info):
+        self.status_text.SetLabel(self._format_status(status_info))
+        self.status_panel.Layout()
+        self.panel.Layout()
+
+    def _format_status(self, status_info):
+        capture_state = status_info.get('capture_state', 'idle')
+        merge_state = status_info.get('merge_state', 'idle')
+        queue_size = status_info.get('queue_size', 0)
+        queue_capacity = status_info.get('queue_capacity', 0)
+        dims = status_info.get('total_dimensions', '0x0')
+        merges = status_info.get('successful_merges', 0)
+        next_capture = status_info.get('next_capture_in')
+        merge_progress = status_info.get('merge_progress')
+        merge_phase = status_info.get('merge_phase', '')
+        last_result = status_info.get('last_result', '')
+        recommendation = status_info.get('recommendation', '')
+
+        next_capture_text = "after next scroll"
+        if next_capture is not None:
+            next_capture_text = f"{max(0.0, next_capture):.2f}s"
+
+        merge_progress_text = "n/a"
+        if merge_progress is not None:
+            merge_progress_text = f"{int(max(0.0, min(1.0, merge_progress)) * 100)}%"
+        if merge_phase:
+            merge_progress_text = f"{merge_progress_text} {merge_phase}"
+
+        return "\n".join([
+            f"Capture: {capture_state} | Merge: {merge_state}",
+            f"Queue: {queue_size}/{queue_capacity} | Stitched: {dims} | Merges: {merges}",
+            f"Next capture: {next_capture_text} | Merge progress: {merge_progress_text}",
+            f"Last: {last_result or 'n/a'} | Hint: {recommendation or 'Scroll until the latest slice is clearly visible'}",
+        ])
 
     def _region_to_rect(self, region=None):
         region = region or self.selection_region
@@ -252,6 +296,14 @@ class LivePreviewFrame(wx.Frame):
         controls_height += 30  # panel padding and inter-section spacing
 
         return frame_extra_w, frame_extra_h, controls_height
+
+    def _get_non_image_client_height(self):
+        controls_height = 0
+        for child in self.panel.GetChildren():
+            if child is self.image_ctrl:
+                continue
+            controls_height += child.GetSize().height
+        return controls_height + 10
 
     def _fit_preview_image_size(self, free_rect):
         selection_rect = self._region_to_rect()
@@ -415,32 +467,24 @@ class LivePreviewFrame(wx.Frame):
 
         # 1. Calculate required display size
         w, h = pil_image.size
-        target_w = self.GetClientSize().width - 10
+        target_w = max(1, self.GetClientSize().width - 10)
         scale = target_w / w
 
         # Calculate how much height we need to show the full image
         required_display_height = int(h * scale)
 
         # Get current client height (excluding debug panel)
-        current_client_height = self.GetClientSize().height
-        if self.debug_mode:
-            current_client_height -= self.debug_panel.GetSize().height
-        current_client_height -= 20  # margins
+        current_client_height = self.GetClientSize().height - self._get_non_image_client_height()
 
         # Resize window if image overflows
         if required_display_height > current_client_height:
-            new_window_height = min(required_display_height + 100, self.max_height)  # +100 for UI elements
-            if self.debug_mode:
-                new_window_height += self.debug_panel.GetSize().height
+            new_window_height = min(required_display_height + self._get_non_image_client_height() + 30, self.max_height)
 
             current_size = self.GetSize()
             self.SetSize((current_size.width, new_window_height))
 
         # 2. Determine what portion of the image to show
-        client_height = self.GetClientSize().height
-        if self.debug_mode:
-            client_height -= self.debug_panel.GetSize().height
-        client_height -= 120  # Account for buttons and settings panel
+        client_height = max(1, self.GetClientSize().height - self._get_non_image_client_height())
 
         view_h_pixels = int(client_height / scale)
 

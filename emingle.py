@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-import sys
-import time
-import threading
-import wx
-import numpy as np
-import mss
-from PIL import Image
 import argparse
+import queue
+import threading
+import time
+
+import mss
+import wx
+from PIL import Image
 from loguru import logger
 
-from utils import setup_logging, Config
-from image_merger import ImageMerger
 from clipboard_manager import ClipboardManager
+from image_merger import ImageMerger
 from listeners import KeyboardListener, MouseScrollListener
-from region_selector import RegionSelector
 from live_preview import LivePreviewFrame
+from region_selector import RegionSelector
+from utils import Config, setup_logging
 
 setup_logging("DEBUG", {"function": True, "thread": True})
+
+MAX_CAPTURE_QUEUE = 3
+DEBOUNCE_TIME = 0.5
 
 # Global State
 full_merged_image = None
@@ -24,12 +27,27 @@ capture_running = True
 manual_trigger_event = threading.Event()
 undo_stack = []
 successful_merge_count = 0
+candidate_queue = queue.Queue(maxsize=MAX_CAPTURE_QUEUE)
+merge_active = threading.Event()
+state_lock = threading.Lock()
+status_lock = threading.Lock()
+status_state = {
+    "capture_state": "idle",
+    "merge_state": "idle",
+    "merge_progress": None,
+    "merge_phase": "",
+    "next_capture_in": None,
+    "last_result": "",
+    "recommendation": "",
+}
+
 
 def _capture_screen_region(monitor):
     with mss.mss() as sct:
         sct_img = sct.grab(monitor)
-        img = Image.frombytes('RGB', sct_img.size, sct_img.rgb)
+        img = Image.frombytes("RGB", sct_img.size, sct_img.rgb)
         return img
+
 
 def run_on_ui_thread(func, *args, **kwargs):
     if wx.IsMainThread():
@@ -52,6 +70,30 @@ def run_on_ui_thread(func, *args, **kwargs):
     if "error" in result:
         raise result["error"]
     return result.get("value")
+
+
+def publish_status(preview_window=None, **updates):
+    global status_state
+
+    with status_lock:
+        status_state.update(updates)
+        snapshot = dict(status_state)
+
+    with state_lock:
+        merged_dimensions = "0x0"
+        if full_merged_image is not None:
+            merged_dimensions = f"{full_merged_image.width}x{full_merged_image.height}"
+        snapshot["total_dimensions"] = merged_dimensions
+        snapshot["successful_merges"] = successful_merge_count
+
+    snapshot["queue_size"] = candidate_queue.qsize()
+    snapshot["queue_capacity"] = candidate_queue.maxsize
+
+    if preview_window is not None:
+        wx.CallAfter(preview_window.update_status, snapshot)
+    elif "preview_window" in globals():
+        wx.CallAfter(globals()["preview_window"].update_status, snapshot)
+
 
 def capture_screenshot(monitor, preview_window=None, settle_delay=0.12):
     preview_was_hidden = False
@@ -76,142 +118,301 @@ def capture_screenshot(monitor, preview_window=None, settle_delay=0.12):
             except Exception as exc:
                 logger.warning(f"Preview restore failed: {exc}")
 
+
 def on_manual_trigger():
-    """Callback function for manual trigger button"""
     manual_trigger_event.set()
+    publish_status(capture_state="manual capture requested", recommendation="Hold steady for the next screenshot")
+
 
 def on_undo_last():
-    """Callback function for undo last button"""
     global full_merged_image, undo_stack
-    if undo_stack:
+
+    if merge_active.is_set() or not candidate_queue.empty():
+        logger.info("Undo is unavailable while queued captures are still processing.")
+        publish_status(
+            last_result="Undo unavailable while queued captures are still merging",
+            recommendation="Wait for the queue to drain before undoing",
+        )
+        return
+
+    with state_lock:
+        if not undo_stack:
+            return
         full_merged_image = undo_stack.pop()
-        logger.info(f"Undid last merge. Stack size: {len(undo_stack)}")
-        # Update preview window
-        if 'preview_window' in globals():
-            wx.CallAfter(preview_window.update_image, full_merged_image, "Undid last merge", True)
+        restored_image = full_merged_image.copy()
+
+    logger.info(f"Undid last merge. Stack size: {len(undo_stack)}")
+    if "preview_window" in globals():
+        wx.CallAfter(preview_window.update_image, restored_image, "Undid last merge", True)
+    publish_status(last_result="Undid the last successful merge", recommendation="Scroll again when the latest slice is near the bottom")
+
 
 def on_cancel():
-    """Callback function for explicit cancel action"""
-    if 'keyboard_listener' in globals():
+    if "keyboard_listener" in globals():
         keyboard_listener.request_exit("cancelled")
+    publish_status(capture_state="cancelled", recommendation="Closing without copying the stitched image")
+
+
+def merge_worker_loop(preview_window, keyboard_listener):
+    global full_merged_image, successful_merge_count, undo_stack
+
+    while True:
+        try:
+            candidate = candidate_queue.get(timeout=0.05)
+        except queue.Empty:
+            if keyboard_listener.exit_event:
+                break
+            continue
+
+        merge_active.set()
+        publish_status(
+            preview_window,
+            merge_state="merging",
+            merge_progress=0.0,
+            merge_phase="starting",
+            recommendation="You can keep scrolling while this merge finishes",
+        )
+
+        with state_lock:
+            base_image = full_merged_image.copy() if full_merged_image is not None else None
+
+        if base_image is None:
+            candidate_queue.task_done()
+            merge_active.clear()
+            continue
+
+        tolerance = 20
+        try:
+            tolerance = run_on_ui_thread(preview_window.get_tolerance)
+        except Exception:
+            pass
+
+        merge_started_at = time.time()
+
+        def progress_callback(progress, phase):
+            publish_status(
+                preview_window,
+                merge_state="merging",
+                merge_progress=progress,
+                merge_phase=phase,
+                recommendation="Wait for the merge to finish or keep scrolling if more content remains",
+            )
+
+        merged_result, merge_metadata = ImageMerger.merge_images_vertically(
+            base_image,
+            candidate["image"],
+            debug_id=f"live-{candidate['captured_at_ns']}",
+            tolerance=tolerance,
+            progress_callback=progress_callback,
+        )
+
+        if merged_result.height > base_image.height:
+            with state_lock:
+                undo_stack.append(base_image.copy())
+                if len(undo_stack) > 10:
+                    undo_stack.pop(0)
+
+                old_height = full_merged_image.height if full_merged_image is not None else base_image.height
+                full_merged_image = merged_result
+                successful_merge_count += 1
+                merged_image = full_merged_image.copy()
+                height_added = merged_image.height - old_height
+
+            logger.success(
+                f"Merged! Total height: {merged_image.height}px "
+                f"(Static: top={merge_metadata['static_top']}px, bottom={merge_metadata['static_bottom']}px)"
+            )
+
+            debug_info = None
+            if Config["DEBUG_MODE"]:
+                debug_info = {
+                    "total_height": merged_image.height,
+                    "height_added": height_added,
+                    "processing_time": time.time() - merge_started_at,
+                    "debounce_time": max(0.0, candidate["captured_at"] - candidate["scroll_timestamp"]),
+                    "static_top": merge_metadata["static_top"],
+                    "static_bottom": merge_metadata["static_bottom"],
+                }
+
+            wx.CallAfter(preview_window.update_image, merged_image, "Merged! Keep scrolling.", True, debug_info)
+            publish_status(
+                preview_window,
+                merge_state="idle",
+                merge_progress=1.0,
+                merge_phase="done",
+                last_result=f"Merged +{height_added}px from a queued capture",
+                recommendation="Scroll until the color slice is almost out of view before capturing again",
+            )
+        else:
+            logger.warning("Merge failed (No overlap).")
+            with state_lock:
+                current_image = full_merged_image.copy() if full_merged_image is not None else base_image.copy()
+
+            wx.CallAfter(preview_window.update_image, current_image, "MISMATCH! Scroll UP slightly.", False)
+            publish_status(
+                preview_window,
+                merge_state="idle",
+                merge_progress=1.0,
+                merge_phase="failed",
+                last_result="Merge failed; the new screenshot did not overlap enough",
+                recommendation="Scroll back slightly and let the next capture include more overlap",
+            )
+
+        candidate_queue.task_done()
+        merge_active.clear()
+
+    publish_status(preview_window, merge_state="idle", merge_progress=None, merge_phase="")
+
 
 def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
     global full_merged_image, capture_running, undo_stack, successful_merge_count
 
-    # Configuration
-    DEBOUNCE_TIME = 0.5  # Seconds to wait after scrolling stops
-
     logger.info("Step 1: Capturing initial base image...")
+    publish_status(
+        preview_window,
+        capture_state="capturing initial screenshot",
+        merge_state="idle",
+        merge_progress=None,
+        merge_phase="",
+        last_result="Preparing the first screenshot",
+        recommendation="Wait for the preview to initialize",
+    )
 
     if keyboard_listener.exit_event:
         wx.CallAfter(wx.GetApp().ExitMainLoop)
         return
 
-    # 1. Initial Capture
+    merge_thread = threading.Thread(
+        target=merge_worker_loop,
+        args=(preview_window, keyboard_listener),
+        daemon=True,
+    )
+    merge_thread.start()
+
     base_img = capture_screenshot(region, preview_window)
-    full_merged_image = base_img
+    with state_lock:
+        full_merged_image = base_img
+        undo_stack.clear()
+        successful_merge_count = 0
 
-    wx.CallAfter(preview_window.update_image, full_merged_image, "Started. Scroll & Stop to capture.", True)
+    wx.CallAfter(preview_window.update_image, base_img, "Started. Scroll & Stop to capture.", True)
+    publish_status(
+        preview_window,
+        capture_state="waiting for scroll",
+        merge_state="idle",
+        merge_progress=None,
+        merge_phase="",
+        last_result="Base screenshot captured",
+        recommendation="Scroll until the latest visible content is close to the bottom, then pause briefly",
+    )
 
-    # Mark the time so we don't re-capture the initial state immediately
     last_processed_time = time.time()
+    last_status_publish = 0.0
 
     while capture_running and not keyboard_listener.exit_event:
-
         now = time.time()
         last_scroll = mouse_listener.last_scroll_time
-
-        # Logic:
-        # 1. Has there been a scroll AFTER our last processing?
-        # 2. Has enough time passed since that scroll (is it settled)?
-        # 3. OR has manual trigger been activated?
-
         manual_triggered = manual_trigger_event.is_set()
         scroll_settled = False
+        next_capture_in = None
 
         if last_scroll > last_processed_time:
             time_since_scroll = now - last_scroll
-
             if time_since_scroll < DEBOUNCE_TIME:
-                # User is still scrolling or just stopped. Update status but wait.
-                # wx.CallAfter(preview_window.status_label.SetLabel, "Settling...")
-                pass
+                next_capture_in = DEBOUNCE_TIME - time_since_scroll
             else:
                 scroll_settled = True
+                next_capture_in = 0.0
 
-        # Check if scroll trigger is enabled for automatic captures
         scroll_trigger_enabled = True
         try:
             scroll_trigger_enabled = preview_window.get_scroll_trigger_enabled()
-        except:
+        except Exception:
             pass
-        
+
+        queue_full = candidate_queue.full()
         if (scroll_settled and scroll_trigger_enabled) or manual_triggered:
-            # --- CAPTURE TRIGGERED ---
             if manual_triggered:
-                logger.info("Manual trigger detected.")
                 manual_trigger_event.clear()
-                wx.CallAfter(preview_window.update_image, full_merged_image, "Capturing...", True)
+
+            if queue_full:
+                publish_status(
+                    preview_window,
+                    capture_state="queue full",
+                    next_capture_in=None,
+                    last_result="Skipped a capture because the queue is full",
+                    recommendation="Pause scrolling until queued captures have merged",
+                )
             else:
-                logger.info(f"Scroll settled ({time_since_scroll:.2f}s). Capturing...")
+                if scroll_settled:
+                    last_processed_time = last_scroll
 
-            # Update timestamp immediately to prevent double triggers
-            if scroll_settled:
-                last_processed_time = last_scroll
+                publish_status(
+                    preview_window,
+                    capture_state="capturing screenshot",
+                    next_capture_in=None,
+                    last_result="Taking a screenshot for the merge queue",
+                    recommendation="Hold still until the capture finishes",
+                )
 
-            wx.CallAfter(preview_window.update_image, full_merged_image, "Capturing...", True)
-            new_candidate = capture_screenshot(region, preview_window)
+                captured_at = time.time()
+                new_candidate = capture_screenshot(region, preview_window)
+                candidate_queue.put_nowait({
+                    "image": new_candidate,
+                    "captured_at": captured_at,
+                    "captured_at_ns": time.time_ns(),
+                    "scroll_timestamp": last_scroll if scroll_settled else captured_at,
+                })
+                publish_status(
+                    preview_window,
+                    capture_state="candidate queued",
+                    next_capture_in=None,
+                    last_result=f"Queued capture {candidate_queue.qsize()}/{candidate_queue.maxsize}",
+                    recommendation="Keep scrolling if more content remains; the merge worker is draining the queue",
+                )
 
-            wx.CallAfter(preview_window.update_image, full_merged_image, "Merging...", True)
+        if now - last_status_publish >= 0.1:
+            if queue_full:
+                capture_state = "queue full"
+                recommendation = "Pause scrolling until the merge queue drains"
+            elif manual_triggered:
+                capture_state = "manual capture requested"
+                recommendation = "Hold steady for the manual capture"
+            elif last_scroll <= last_processed_time:
+                capture_state = "waiting for scroll" if scroll_trigger_enabled else "auto capture disabled"
+                recommendation = (
+                    "Scroll down until the color slice is almost out of view"
+                    if scroll_trigger_enabled else
+                    "Use Take Screenshot or re-enable auto capture"
+                )
+            elif scroll_settled:
+                capture_state = "ready to capture"
+                recommendation = "Hold steady; the next screenshot can be taken now"
+            else:
+                capture_state = "waiting for settle"
+                recommendation = "Pause briefly so the next screenshot overlaps cleanly"
 
-            # Get current tolerance setting
-            tolerance = 20  # default
-            try:
-                tolerance = preview_window.get_tolerance()
-            except:
-                pass
-
-            # Attempt Merge
-            merged_result, merge_metadata = ImageMerger.merge_images_vertically(
-                full_merged_image,
-                new_candidate,
-                debug_id="live",
-                tolerance=tolerance
+            publish_status(
+                preview_window,
+                capture_state=capture_state,
+                next_capture_in=next_capture_in,
+                recommendation=recommendation,
             )
-
-            if merged_result.height > full_merged_image.height:
-                # Success - save current state to undo stack before updating
-                undo_stack.append(full_merged_image.copy())
-                # Keep undo stack reasonable size
-                if len(undo_stack) > 10:
-                    undo_stack.pop(0)
-                
-                old_height = full_merged_image.height
-                full_merged_image = merged_result
-                successful_merge_count += 1
-                logger.success(f"Merged! Total height: {full_merged_image.height}px (Static: top={merge_metadata['static_top']}px, bottom={merge_metadata['static_bottom']}px)")
-
-                # Pass debug info if in debug mode
-                debug_info = None
-                if Config["DEBUG_MODE"]:
-                    debug_info = {
-                        'total_height': full_merged_image.height,
-                        'height_added': full_merged_image.height - old_height,
-                        'processing_time': time.time() - last_scroll,
-                        'debounce_time': time_since_scroll,
-                        'static_top': merge_metadata['static_top'],
-                        'static_bottom': merge_metadata['static_bottom']
-                    }
-
-                wx.CallAfter(preview_window.update_image, full_merged_image, "Merged! Keep scrolling.", True, debug_info)
-            else:
-                # Fail
-                logger.warning("Merge failed (No overlap).")
-                wx.CallAfter(preview_window.update_image, full_merged_image, "MISMATCH! Scroll UP slightly.", False)
+            last_status_publish = now
 
         time.sleep(0.01)
 
-    # --- FINALIZATION ---
+    if not candidate_queue.empty() or merge_active.is_set():
+        publish_status(
+            preview_window,
+            capture_state="draining queue",
+            next_capture_in=None,
+            recommendation="Waiting for queued captures to finish merging before exit",
+        )
+
+    candidate_queue.join()
+    merge_thread.join(timeout=1.0)
+
     should_copy = (
         full_merged_image is not None and
         successful_merge_count > 0 and
@@ -220,64 +421,83 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
 
     if should_copy:
         logger.info("Copying to clipboard...")
-        wx.CallAfter(preview_window.update_image, full_merged_image, "Copied to Clipboard!", True)
-        ClipboardManager.copy_image_to_clipboard(full_merged_image)
+        with state_lock:
+            final_image = full_merged_image.copy()
+        wx.CallAfter(preview_window.update_image, final_image, "Copied to Clipboard!", True)
+        publish_status(
+            preview_window,
+            capture_state="completed",
+            merge_state="idle",
+            merge_progress=None,
+            merge_phase="",
+            last_result="Copied the stitched image to the clipboard",
+            recommendation="Done",
+        )
+        ClipboardManager.copy_image_to_clipboard(final_image)
 
         if Config["DEBUG_MODE"]:
-            full_merged_image.show()
+            final_image.show()
     else:
         logger.info("Exiting without copying stitched output.")
+        publish_status(
+            preview_window,
+            capture_state="cancelled" if keyboard_listener.exit_reason == "cancelled" else "stopped",
+            merge_state="idle",
+            merge_progress=None,
+            merge_phase="",
+            last_result="Exited without copying stitched output",
+            recommendation="Done",
+        )
 
     wx.CallAfter(wx.GetApp().ExitMainLoop)
 
+
 def main():
     global capture_running
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', action='store_true')
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     Config["DEBUG_MODE"] = args.debug
 
     logger.info("Select region...")
     selector = RegionSelector()
     selection = selector.select_region()
-    if not selection: return
+    if not selection:
+        return
 
-    # Start Listeners
     key_listener = KeyboardListener()
     key_listener.start()
-    globals()['keyboard_listener'] = key_listener
+    globals()["keyboard_listener"] = key_listener
 
     mouse_listener = MouseScrollListener(key_listener)
     mouse_listener.start()
 
-    # UI
     app = wx.App(False)
     preview = LivePreviewFrame(
-        selection['height'],
+        selection["height"],
         debug_mode=Config["DEBUG_MODE"],
         selection_region=selection,
         manual_callback=on_manual_trigger,
         undo_callback=on_undo_last,
         cancel_callback=on_cancel,
     )
-    
-    # Make preview_window globally accessible for undo callback
-    globals()['preview_window'] = preview
+    globals()["preview_window"] = preview
 
-    # Thread
-    t = threading.Thread(
+    worker_thread = threading.Thread(
         target=processing_loop,
         args=(selection, preview, mouse_listener, key_listener),
-        daemon=True
+        daemon=True,
     )
-    wx.CallAfter(t.start)
+    wx.CallAfter(worker_thread.start)
 
     logger.info("System Ready.")
     logger.info("1. Scroll the content.")
-    logger.info("2. Stop and wait 0.6s.")
-    logger.info("3. Watch the preview window.")
+    logger.info("2. Pause to queue a capture.")
+    logger.info("3. Watch the preview status for queue and merge progress.")
 
     app.MainLoop()
+
 
 if __name__ == "__main__":
     main()

@@ -10,6 +10,10 @@ import matplotlib.patches as patches
 from utils import Config
 
 class ImageMerger:
+    @staticmethod
+    def _report_progress(progress_callback, progress, phase):
+        if progress_callback is not None:
+            progress_callback(progress, phase)
 
     @staticmethod
     def _calculate_static_bounds(arr1, arr2, threshold=10):
@@ -52,14 +56,16 @@ class ImageMerger:
         return top_static, bottom_static
 
     @staticmethod
-    def compute_overlap_offset(base_img_arr, new_img_arr, crop_top=0, crop_bottom=0, debug_id=None, min_overlap=20, search_limit_ratio=1):
+    def compute_overlap_offset(base_img_arr, new_img_arr, crop_top=0, crop_bottom=0, debug_id=None, min_overlap=20, search_limit_ratio=1, progress_callback=None):
         def to_gray(arr):
             return np.dot(arr[..., :3], [0.2989, 0.5870, 0.1140])
 
+        ImageMerger._report_progress(progress_callback, 0.20, "converting to grayscale")
         gray_base = to_gray(base_img_arr)
         gray_new = to_gray(new_img_arr)
 
         # 1. Edge Detection
+        ImageMerger._report_progress(progress_callback, 0.35, "detecting edges")
         feat_base = sobel(gray_base, axis=0)
         feat_new = sobel(gray_new, axis=0)
 
@@ -95,6 +101,7 @@ class ImageMerger:
         search_region = feat_base[search_start_y:, :]
 
         # 2. Template Matching
+        ImageMerger._report_progress(progress_callback, 0.55, "matching overlap")
         result = match_template(search_region, probe)
         ij = np.unravel_index(np.argmax(result), result.shape)
         y_match_local, x_match_local = ij
@@ -123,11 +130,13 @@ class ImageMerger:
         if match_score < 0.4:
             return None, 0
 
+        ImageMerger._report_progress(progress_callback, 0.72, "overlap located")
         return shift, overlap_height
 
     @staticmethod
-    def validate_overlap_robust(base_arr, new_arr, shift, overlap_height, crop_top=0, crop_bottom=0, tolerance=20.0):
+    def validate_overlap_robust(base_arr, new_arr, shift, overlap_height, crop_top=0, crop_bottom=0, tolerance=20.0, progress_callback=None):
         if overlap_height <= 0: return False
+        ImageMerger._report_progress(progress_callback, 0.82, "validating overlap")
 
         # Extract Overlapping Regions
         region_base = base_arr[shift : shift + overlap_height, :, :]
@@ -202,7 +211,8 @@ class ImageMerger:
         return median_content_error < tolerance
 
     @staticmethod
-    def merge_images_vertically(base_img, new_img, debug_id=None, tolerance=20.0):
+    def merge_images_vertically(base_img, new_img, debug_id=None, tolerance=20.0, progress_callback=None):
+        ImageMerger._report_progress(progress_callback, 0.05, "preparing")
         base_arr = np.array(base_img)
         new_arr = np.array(new_img)
 
@@ -210,6 +220,7 @@ class ImageMerger:
             return base_img
 
         # 1. Detect Static Bars
+        ImageMerger._report_progress(progress_callback, 0.12, "detecting static bars")
         t_crop, b_crop = ImageMerger._calculate_static_bounds(base_arr, new_arr)
         if t_crop > 0 or b_crop > 0:
             logger.debug(f"Detected static bars: Top {t_crop}px, Bottom {b_crop}px")
@@ -219,7 +230,8 @@ class ImageMerger:
             base_arr, new_arr,
             crop_top=t_crop,
             crop_bottom=b_crop,
-            debug_id=debug_id
+            debug_id=debug_id,
+            progress_callback=progress_callback,
         )
 
         if shift is None or overlap_height < 10:
@@ -235,7 +247,7 @@ class ImageMerger:
         # 3. Validate (ignoring static bars)
         is_valid = ImageMerger.validate_overlap_robust(
             base_arr, new_arr, shift, overlap_height,
-            crop_top=t_crop, crop_bottom=b_crop, tolerance=tolerance
+            crop_top=t_crop, crop_bottom=b_crop, tolerance=tolerance, progress_callback=progress_callback
         )
 
         if not is_valid:
@@ -257,6 +269,7 @@ class ImageMerger:
         part_b_2 = new_arr[cut_point : overlap_height]
         part_c = new_arr[overlap_height:]
 
+        ImageMerger._report_progress(progress_callback, 0.96, "building stitched image")
         merged = np.vstack((part_a, part_b_1, part_b_2, part_c))
         metadata = {
             'static_top': t_crop,
@@ -264,6 +277,7 @@ class ImageMerger:
             'overlap_height': overlap_height,
             'shift': shift
         }
+        ImageMerger._report_progress(progress_callback, 1.0, "done")
         return Image.fromarray(merged), metadata
 
     @staticmethod
