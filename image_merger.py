@@ -94,6 +94,7 @@ class ImageMerger:
              probe_y_end = h_new - crop_bottom - 1
 
         probe = feat_new[probe_y_start:probe_y_end, :]
+        probe_height = probe.shape[0]
 
         # Search Region: Bottom of base image
         search_height = int(h_base * search_limit_ratio)
@@ -128,10 +129,10 @@ class ImageMerger:
             )
 
         if match_score < 0.4:
-            return None, 0
+            return None, 0, None, 0
 
         ImageMerger._report_progress(progress_callback, 0.72, "overlap located")
-        return shift, overlap_height
+        return shift, overlap_height, match_y_global, probe_height
 
     @staticmethod
     def validate_overlap_robust(base_arr, new_arr, shift, overlap_height, crop_top=0, crop_bottom=0, tolerance=20.0, progress_callback=None):
@@ -226,7 +227,7 @@ class ImageMerger:
             logger.debug(f"Detected static bars: Top {t_crop}px, Bottom {b_crop}px")
 
         # 2. Compute Offset (ignoring static bars)
-        shift, overlap_height = ImageMerger.compute_overlap_offset(
+        shift, overlap_height, match_y_global, match_band_height = ImageMerger.compute_overlap_offset(
             base_arr, new_arr,
             crop_top=t_crop,
             crop_bottom=b_crop,
@@ -241,6 +242,9 @@ class ImageMerger:
                 'static_bottom': b_crop,
                 'overlap_height': 0,
                 'shift': None,
+                'match_status': 'none',
+                'matched_region_start': None,
+                'matched_region_end': None,
                 'latest_slice_start': 0,
                 'latest_slice_end': 0,
                 'overlap_visual_start': 0,
@@ -256,15 +260,19 @@ class ImageMerger:
 
         if not is_valid:
             logger.warning(f"Step {debug_id}: Validation failed.")
+            match_band_end = match_y_global + match_band_height
             metadata = {
                 'static_top': t_crop,
                 'static_bottom': b_crop,
                 'overlap_height': overlap_height,
                 'shift': shift,
+                'match_status': 'candidate',
+                'matched_region_start': shift,
+                'matched_region_end': shift + overlap_height,
                 'latest_slice_start': 0,
                 'latest_slice_end': 0,
-                'overlap_visual_start': 0,
-                'overlap_visual_end': 0,
+                'overlap_visual_start': match_y_global,
+                'overlap_visual_end': match_band_end,
             }
             return base_img, metadata
 
@@ -286,10 +294,13 @@ class ImageMerger:
             'static_bottom': b_crop,
             'overlap_height': overlap_height,
             'shift': shift,
+            'match_status': 'merged',
+            'matched_region_start': shift,
+            'matched_region_end': shift + overlap_height,
             'latest_slice_start': latest_slice_start,
             'latest_slice_end': latest_slice_end,
-            'overlap_visual_start': latest_slice_start,
-            'overlap_visual_end': shift + overlap_height,
+            'overlap_visual_start': match_y_global,
+            'overlap_visual_end': match_y_global + match_band_height,
         }
         ImageMerger._report_progress(progress_callback, 1.0, "done")
         return Image.fromarray(merged), metadata
