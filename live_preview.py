@@ -2,15 +2,71 @@ import wx
 import numpy as np
 from PIL import Image
 
+
+def compute_semantic_regions(
+    *,
+    image_height,
+    render_success,
+    latest_slice,
+    matched_region,
+    probe_region,
+    static_top,
+    static_bottom,
+):
+    latest_start, latest_end = latest_slice
+    matched_start, matched_end = matched_region
+    probe_start, probe_end = probe_region
+
+    if matched_end > matched_start:
+        footprint = (matched_start, min(image_height, matched_end))
+    elif latest_end > latest_start:
+        footprint = (latest_start, min(image_height, latest_end))
+    else:
+        footprint = (0, 0)
+
+    if probe_end > probe_start:
+        probe = (max(0, probe_start), min(image_height, probe_end))
+    else:
+        probe = (0, 0)
+
+    static_top_band = (0, 0)
+    static_bottom_band = (0, 0)
+    if footprint[1] > footprint[0]:
+        static_top_band = (
+            footprint[0],
+            min(footprint[1], footprint[0] + max(0, static_top)),
+        )
+        static_bottom_band = (
+            max(footprint[0], footprint[1] - max(0, static_bottom)),
+            footprint[1],
+        )
+
+    return {
+        "footprint": footprint,
+        "probe": probe,
+        "show_latest_slice_color": render_success and footprint[1] > footprint[0],
+        "show_previous_success_footprint": False,
+        "static_top": static_top,
+        "static_bottom": static_bottom,
+        "static_top_band": static_top_band,
+        "static_bottom_band": static_bottom_band,
+    }
+
+
 class LivePreviewFrame(wx.Frame):
     def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None):
         # Geometry defaults are refined after controls exist and displays are inspected.
         self.initial_width = 400 if not debug_mode else 500
         self.initial_height = 800  # Increased to fit new controls
-        self.max_height = screen_height - 100  # Leave some margin
+        self.max_height = max(320, screen_height - 100)  # Recomputed from display bounds later
         self.preview_margin = 16
-        self.min_preview_image_width = 280
-        self.min_preview_image_height = 220
+        self.min_preview_width_ratio = 0.40
+        self.max_preview_width_ratio = 0.80
+        self.min_preview_image_height = 160
+        self.capture_source_height = max(1, screen_height)
+        self.capture_source_width = selection_region['width'] if selection_region else self.initial_width
+        self._render_image = None
+        self._render_success = True
 
         style = wx.STAY_ON_TOP | wx.FRAME_TOOL_WINDOW | wx.CAPTION | wx.RESIZE_BORDER
         super().__init__(None, title="Live Stitcher", size=(self.initial_width, self.initial_height), style=style)
@@ -136,6 +192,9 @@ class LivePreviewFrame(wx.Frame):
         self.last_static_bottom = 0
         self.last_latest_slice_start = 0
         self.last_latest_slice_end = 0
+        self.last_match_status = "none"
+        self.last_matched_region_start = 0
+        self.last_matched_region_end = 0
         self.last_overlap_visual_start = 0
         self.last_overlap_visual_end = 0
         self.Show()
@@ -168,21 +227,22 @@ class LivePreviewFrame(wx.Frame):
         last_result = status_info.get('last_result', '')
         recommendation = status_info.get('recommendation', '')
 
-        next_capture_text = "after next scroll"
+        next_capture_text = "next scroll"
         if next_capture is not None:
             next_capture_text = f"{max(0.0, next_capture):.2f}s"
 
-        merge_progress_text = "n/a"
+        merge_progress_text = merge_state
         if merge_progress is not None:
-            merge_progress_text = f"{int(max(0.0, min(1.0, merge_progress)) * 100)}%"
+            merge_progress_text = f"{merge_state} {int(max(0.0, min(1.0, merge_progress)) * 100)}%"
         if merge_phase:
-            merge_progress_text = f"{merge_progress_text} {merge_phase}"
+            merge_progress_text = f"{merge_progress_text}, {merge_phase}"
+
+        summary = recommendation or last_result or "Scroll until the color slice nears the bottom"
 
         return "\n".join([
-            f"Capture: {capture_state} | Merge: {merge_state}",
-            f"Queue: {queue_size}/{queue_capacity} | Stitched: {dims} | Merges: {merges}",
-            f"Next capture: {next_capture_text} | Merge progress: {merge_progress_text}",
-            f"Last: {last_result or 'n/a'} | Hint: {recommendation or 'Scroll until the latest slice is clearly visible'}",
+            f"{capture_state} | {merge_progress_text}",
+            f"{dims} stitched | queue {queue_size}/{queue_capacity} | next {next_capture_text}",
+            summary,
         ])
 
     def _region_to_rect(self, region=None):
@@ -212,78 +272,23 @@ class LivePreviewFrame(wx.Frame):
     def _build_rect(self, x, y, width, height):
         return wx.Rect(int(x), int(y), int(width), int(height))
 
-    def _rect_intersection(self, rect_a, rect_b):
-        if rect_a is None or rect_b is None or not self._rect_intersects(rect_a, rect_b):
-            return None
-
-        left = max(rect_a.x, rect_b.x)
-        top = max(rect_a.y, rect_b.y)
-        right = min(rect_a.x + rect_a.width, rect_b.x + rect_b.width)
-        bottom = min(rect_a.y + rect_a.height, rect_b.y + rect_b.height)
-        return wx.Rect(left, top, right - left, bottom - top)
-
     def _get_display_rects(self):
         rects = []
         for idx in range(wx.Display.GetCount()):
             rects.append(wx.Display(idx).GetClientArea())
         return rects
 
-    def _add_candidate_area(self, areas, seen_keys, rect, display_index):
-        if rect.width <= 0 or rect.height <= 0:
-            return
+    def _get_display_bounds(self):
+        rects = self._get_display_rects()
+        if not rects:
+            display_width, display_height = wx.DisplaySize()
+            return wx.Rect(0, 0, display_width, display_height)
 
-        key = (rect.x, rect.y, rect.width, rect.height)
-        if key in seen_keys:
-            return
-        seen_keys.add(key)
-        areas.append((display_index, rect))
-
-    def _get_non_overlapping_areas(self, selection_rect):
-        areas = []
-        seen_keys = set()
-        for display_index, display_rect in enumerate(self._get_display_rects()):
-            usable_rect = wx.Rect(
-                display_rect.x + self.preview_margin,
-                display_rect.y + self.preview_margin,
-                max(0, display_rect.width - (self.preview_margin * 2)),
-                max(0, display_rect.height - (self.preview_margin * 2)),
-            )
-            if usable_rect.width <= 0 or usable_rect.height <= 0:
-                continue
-
-            overlap = self._rect_intersection(usable_rect, selection_rect)
-            if overlap is None:
-                self._add_candidate_area(areas, seen_keys, usable_rect, display_index)
-                continue
-
-            self._add_candidate_area(
-                areas,
-                seen_keys,
-                wx.Rect(usable_rect.x, usable_rect.y, overlap.x - usable_rect.x, usable_rect.height),
-                display_index,
-            )
-            self._add_candidate_area(
-                areas,
-                seen_keys,
-                wx.Rect(overlap.x + overlap.width, usable_rect.y,
-                        (usable_rect.x + usable_rect.width) - (overlap.x + overlap.width), usable_rect.height),
-                display_index,
-            )
-            self._add_candidate_area(
-                areas,
-                seen_keys,
-                wx.Rect(usable_rect.x, usable_rect.y, usable_rect.width, overlap.y - usable_rect.y),
-                display_index,
-            )
-            self._add_candidate_area(
-                areas,
-                seen_keys,
-                wx.Rect(usable_rect.x, overlap.y + overlap.height, usable_rect.width,
-                        (usable_rect.y + usable_rect.height) - (overlap.y + overlap.height)),
-                display_index,
-            )
-
-        return areas
+        min_x = min(rect.x for rect in rects)
+        min_y = min(rect.y for rect in rects)
+        max_right = max(rect.x + rect.width for rect in rects)
+        max_bottom = max(rect.y + rect.height for rect in rects)
+        return wx.Rect(min_x, min_y, max_right - min_x, max_bottom - min_y)
 
     def _get_frame_overhead(self):
         frame_size = self.GetSize()
@@ -309,96 +314,85 @@ class LivePreviewFrame(wx.Frame):
             controls_height += child.GetSize().height
         return controls_height + 10
 
-    def _fit_preview_image_size(self, free_rect):
+    def _fit_preview_image_size(self, available_width, available_height):
         selection_rect = self._region_to_rect()
         if selection_rect is None or selection_rect.width <= 0 or selection_rect.height <= 0:
             return None
 
         frame_extra_w, frame_extra_h, controls_height = self._get_frame_overhead()
-        image_max_w = free_rect.width - frame_extra_w - 12
-        image_max_h = free_rect.height - frame_extra_h - controls_height
+        image_min_w = max(1, int(selection_rect.width * self.min_preview_width_ratio))
+        image_max_w = min(
+            int(selection_rect.width * self.max_preview_width_ratio),
+            available_width - frame_extra_w - 12,
+        )
+        image_max_h = available_height - frame_extra_h - controls_height
         if image_max_w <= 0 or image_max_h <= 0:
             return None
 
-        source_aspect = selection_rect.width / selection_rect.height
-        image_w = min(image_max_w, int(image_max_h * source_aspect))
-        image_h = int(image_w / source_aspect) if source_aspect else image_max_h
-
-        if image_h > image_max_h:
-            image_h = image_max_h
-            image_w = int(image_h * source_aspect)
-
-        if image_w < self.min_preview_image_width or image_h < self.min_preview_image_height:
+        image_w = image_max_w
+        if image_w < image_min_w and available_width - frame_extra_w - 12 > 0:
+            image_w = available_width - frame_extra_w - 12
+        if image_w <= 0:
             return None
+
+        scale = image_w / selection_rect.width
+        desired_source_visible_h = self.capture_source_height * 2
+        image_h = int(desired_source_visible_h * scale)
+        image_h = max(self.min_preview_image_height, min(image_h, image_max_h))
 
         window_w = image_w + frame_extra_w + 12
         window_h = image_h + frame_extra_h + controls_height
         return window_w, window_h, image_w * image_h
-
-    def _score_area(self, free_rect, window_w, window_h, selection_rect):
-        selection_center_x = selection_rect.x + (selection_rect.width / 2)
-        selection_center_y = selection_rect.y + (selection_rect.height / 2)
-        area_center_x = free_rect.x + (free_rect.width / 2)
-        area_center_y = free_rect.y + (free_rect.height / 2)
-        distance = abs(area_center_x - selection_center_x) + abs(area_center_y - selection_center_y)
-
-        if free_rect.x >= selection_rect.x + selection_rect.width:
-            placement_bias = 3
-        elif free_rect.x + free_rect.width <= selection_rect.x:
-            placement_bias = 2
-        elif free_rect.y + free_rect.height <= selection_rect.y:
-            placement_bias = 1
-        elif free_rect.y >= selection_rect.y + selection_rect.height:
-            placement_bias = 0
-        else:
-            placement_bias = -1
-
-        return (placement_bias, -distance, free_rect.width * free_rect.height, window_w * window_h)
-
-    def _place_window_in_area(self, free_rect, window_w, window_h, selection_rect):
-        if free_rect.x >= selection_rect.x + selection_rect.width:
-            pos_x = free_rect.x
-            pos_y = max(free_rect.y, min(selection_rect.y, free_rect.y + free_rect.height - window_h))
-        elif free_rect.x + free_rect.width <= selection_rect.x:
-            pos_x = free_rect.x + free_rect.width - window_w
-            pos_y = max(free_rect.y, min(selection_rect.y, free_rect.y + free_rect.height - window_h))
-        elif free_rect.y + free_rect.height <= selection_rect.y:
-            pos_x = max(free_rect.x, min(selection_rect.x, free_rect.x + free_rect.width - window_w))
-            pos_y = free_rect.y + free_rect.height - window_h
-        elif free_rect.y >= selection_rect.y + selection_rect.height:
-            pos_x = max(free_rect.x, min(selection_rect.x, free_rect.x + free_rect.width - window_w))
-            pos_y = free_rect.y
-        else:
-            pos_x = free_rect.x + max(0, (free_rect.width - window_w) // 2)
-            pos_y = free_rect.y + max(0, (free_rect.height - window_h) // 2)
-
-        pos_x = max(free_rect.x, min(pos_x, free_rect.x + free_rect.width - window_w))
-        pos_y = max(free_rect.y, min(pos_y, free_rect.y + free_rect.height - window_h))
-        return int(pos_x), int(pos_y)
 
     def _find_safe_preview_rect(self):
         selection_rect = self._region_to_rect()
         if selection_rect is None:
             return None
 
-        best_candidate = None
-        best_score = None
-        for _, free_rect in self._get_non_overlapping_areas(selection_rect):
-            fitted = self._fit_preview_image_size(free_rect)
+        display_bounds = self._get_display_bounds()
+        self.max_height = max(320, display_bounds.height - (self.preview_margin * 2))
+
+        frame_extra_w, _, _ = self._get_frame_overhead()
+        min_window_w = int(selection_rect.width * self.min_preview_width_ratio) + frame_extra_w + 12
+
+        selection_top = selection_rect.y
+        selection_right = selection_rect.x + selection_rect.width
+        available_right = max(0, (display_bounds.x + display_bounds.width) - selection_right - (self.preview_margin * 2))
+        available_left = max(0, selection_rect.x - display_bounds.x - (self.preview_margin * 2))
+
+        if available_right >= min_window_w or available_left <= 0:
+            side = "right"
+        elif available_left >= min_window_w:
+            side = "left"
+        else:
+            side = "right" if available_right >= available_left else "left"
+
+        available_width = available_right if side == "right" else available_left
+        available_height = display_bounds.height - (self.preview_margin * 2)
+        fitted = self._fit_preview_image_size(available_width, available_height)
+        if fitted is None:
+            other_side = "left" if side == "right" else "right"
+            other_width = available_left if side == "right" else available_right
+            fitted = self._fit_preview_image_size(other_width, available_height)
             if fitted is None:
-                continue
-            window_w, window_h, image_area = fitted
-            pos_x, pos_y = self._place_window_in_area(free_rect, window_w, window_h, selection_rect)
-            candidate_rect = wx.Rect(pos_x, pos_y, window_w, window_h)
-            if self._rect_intersects(candidate_rect, selection_rect):
-                continue
+                return None
+            side = other_side
+            available_width = other_width
 
-            score = (image_area,) + self._score_area(free_rect, window_w, window_h, selection_rect)
-            if best_score is None or score > best_score:
-                best_score = score
-                best_candidate = candidate_rect
+        window_w, window_h, _ = fitted
+        if side == "right":
+            pos_x = selection_right + self.preview_margin
+        else:
+            pos_x = selection_rect.x - window_w - self.preview_margin
 
-        return best_candidate
+        min_x = display_bounds.x + self.preview_margin
+        max_x = (display_bounds.x + display_bounds.width) - self.preview_margin - window_w
+        min_y = display_bounds.y + self.preview_margin
+        max_y = (display_bounds.y + display_bounds.height) - self.preview_margin - window_h
+
+        pos_x = max(min_x, min(pos_x, max_x))
+        pos_y = max(min_y, min(selection_top, max_y))
+        return wx.Rect(int(pos_x), int(pos_y), int(window_w), int(window_h))
 
     def ensure_safe_position(self):
         safe_rect = self._find_safe_preview_rect()
@@ -410,9 +404,9 @@ class LivePreviewFrame(wx.Frame):
 
     def _apply_initial_geometry(self):
         if not self.ensure_safe_position():
-            display_width, display_height = wx.DisplaySize()
-            fallback_x = max(self.preview_margin, display_width - self.initial_width - self.preview_margin)
-            fallback_y = self.preview_margin
+            display_bounds = self._get_display_bounds()
+            fallback_x = max(display_bounds.x + self.preview_margin, display_bounds.x + display_bounds.width - self.initial_width - self.preview_margin)
+            fallback_y = display_bounds.y + self.preview_margin
             self.SetSize((self.initial_width, self.initial_height))
             self.SetPosition((fallback_x, fallback_y))
 
@@ -445,6 +439,8 @@ class LivePreviewFrame(wx.Frame):
         """
         Updates the preview with the BOTTOM part of the huge merged image.
         """
+        self._render_image = pil_image.copy()
+        self._render_success = success
 
         # Store overlay data
         if debug_info:
@@ -454,207 +450,223 @@ class LivePreviewFrame(wx.Frame):
                 self.last_static_top = debug_info['static_top']
             if 'static_bottom' in debug_info:
                 self.last_static_bottom = debug_info['static_bottom']
-            if 'latest_slice_start' in debug_info:
+            if 'match_status' in debug_info:
+                self.last_match_status = debug_info['match_status']
+            if 'matched_region_start' in debug_info and debug_info['matched_region_start'] is not None:
+                self.last_matched_region_start = debug_info['matched_region_start']
+                self.last_matched_region_end = max(
+                    self.last_matched_region_start,
+                    debug_info.get('matched_region_end', self.last_matched_region_start),
+                )
+            if (
+                'latest_slice_start' in debug_info and
+                debug_info.get('latest_slice_end', 0) > debug_info['latest_slice_start']
+            ):
                 self.last_latest_slice_start = debug_info['latest_slice_start']
-            if 'latest_slice_end' in debug_info:
                 self.last_latest_slice_end = debug_info['latest_slice_end']
-            if 'overlap_visual_start' in debug_info:
+            if (
+                'overlap_visual_start' in debug_info and
+                debug_info.get('overlap_visual_end', 0) > debug_info['overlap_visual_start']
+            ):
                 self.last_overlap_visual_start = debug_info['overlap_visual_start']
-            if 'overlap_visual_end' in debug_info:
                 self.last_overlap_visual_end = debug_info['overlap_visual_end']
 
         # Update debug info if provided
         if self.debug_mode and debug_info:
-            self.debug_height.SetLabel(f"Total Height: {debug_info['total_height']}px")
-            self.debug_added.SetLabel(f"Height Added: {debug_info['height_added']}px")
-            self.debug_processing.SetLabel(f"Processing Time: {debug_info['processing_time']:.3f}s")
-            self.debug_debounce.SetLabel(f"Debounce Time: {debug_info['debounce_time']:.3f}s")
-            self.debug_static_top.SetLabel(f"Static Top: {debug_info['static_top']}px")
-            self.debug_static_bottom.SetLabel(f"Static Bottom: {debug_info['static_bottom']}px")
+            self.debug_height.SetLabel(f"Total Height: {debug_info.get('total_height', pil_image.height)}px")
+            self.debug_added.SetLabel(f"Height Added: {debug_info.get('height_added', self.last_height_added)}px")
+            self.debug_processing.SetLabel(f"Processing Time: {debug_info.get('processing_time', 0.0):.3f}s")
+            self.debug_debounce.SetLabel(f"Debounce Time: {debug_info.get('debounce_time', 0.0):.3f}s")
+            self.debug_static_top.SetLabel(f"Static Top: {debug_info.get('static_top', self.last_static_top)}px")
+            self.debug_static_bottom.SetLabel(f"Static Bottom: {debug_info.get('static_bottom', self.last_static_bottom)}px")
 
-        if success:
-            self.panel.SetBackgroundColour("#228B22") # Forest Green
-        else:
-            self.panel.SetBackgroundColour("#DC143C") # Crimson Red
+        self.panel.SetBackgroundColour(wx.BLACK)
+        self._draw_preview()
+        wx.CallLater(200, self.panel.Refresh)
 
-        # 1. Calculate required display size
+    def _draw_preview(self):
+        if self._render_image is None:
+            return
+
+        pil_image = self._render_image
+        success = self._render_success
         w, h = pil_image.size
-        target_w = max(1, self.GetClientSize().width - 10)
-        scale = target_w / w
-
-        # Calculate how much height we need to show the full image
-        required_display_height = int(h * scale)
-
-        # Get current client height (excluding debug panel)
-        current_client_height = self.GetClientSize().height - self._get_non_image_client_height()
-
-        # Resize window if image overflows
-        if required_display_height > current_client_height:
-            new_window_height = min(required_display_height + self._get_non_image_client_height() + 30, self.max_height)
-
-            current_size = self.GetSize()
-            self.SetSize((current_size.width, new_window_height))
-
-        # 2. Determine what portion of the image to show
+        available_image_w = max(1, self.GetClientSize().width - 10)
         client_height = max(1, self.GetClientSize().height - self._get_non_image_client_height())
 
-        view_h_pixels = int(client_height / scale)
+        full_scale = min(self.max_preview_width_ratio, available_image_w / w, client_height / h)
+        tail_scale_floor = self.min_preview_width_ratio
 
-        # Show bottom portion if image is too tall
-        if h > view_h_pixels:
-            crop_top = h - view_h_pixels
-            crop = pil_image.crop((0, crop_top, w, h))
-        else:
-            crop = pil_image
+        if full_scale >= tail_scale_floor:
+            scale = full_scale
             crop_top = 0
+            crop = pil_image
+            tail_mode = False
+        else:
+            scale = min(available_image_w / w, tail_scale_floor)
+            if scale <= 0:
+                scale = max(0.01, available_image_w / w)
+            visible_source_h = max(1, int(client_height / scale))
+            crop_h = min(h, visible_source_h)
+            crop_top = h - crop_h
+            crop = pil_image.crop((0, crop_top, w, crop_top + crop_h))
+            tail_mode = True
 
-        # 3. Resize for display
-        disp_w = int(crop.width * scale)
-        disp_h = int(crop.height * scale)
+        disp_w = max(1, int(crop.width * scale))
+        disp_h = max(1, int(crop.height * scale))
         img_resized = crop.resize((disp_w, disp_h), Image.Resampling.BOX)
 
-        # 4. Add overlays for newly added pixels and static borders
-        img_with_overlay = img_resized
-        if success and self.last_latest_slice_end > self.last_latest_slice_start:
-            img_with_overlay = self._add_latest_slice_focus(img_with_overlay, crop_top, scale)
-        elif success and self.last_height_added > 0:
-            img_with_overlay = self._add_new_pixels_overlay(img_with_overlay, crop_top, h, scale)
-        if success and (self.last_static_top > 0 or self.last_static_bottom > 0):
-            img_with_overlay = self._add_static_borders_overlay(img_with_overlay, crop_top, h, scale)
+        regions = compute_semantic_regions(
+            image_height=h,
+            render_success=success,
+            latest_slice=(self.last_latest_slice_start, self.last_latest_slice_end),
+            matched_region=(self.last_matched_region_start, self.last_matched_region_end),
+            probe_region=(self.last_overlap_visual_start, self.last_overlap_visual_end),
+            static_top=self.last_static_top,
+            static_bottom=self.last_static_bottom,
+        )
+        has_footprint = regions["footprint"][1] > regions["footprint"][0]
+        has_probe = regions["probe"][1] > regions["probe"][0]
+        if has_footprint or has_probe:
+            img_with_overlay = img_resized.convert("L").convert("RGB")
+        else:
+            img_with_overlay = img_resized.copy()
 
-        # 5. Convert to WX Bitmap
+        if has_footprint:
+            img_with_overlay = self._color_region(
+                img_with_overlay,
+                img_resized,
+                crop_top,
+                scale,
+                regions["footprint"],
+            )
+        if has_probe:
+            img_with_overlay = self._add_match_overlay(
+                img_with_overlay,
+                crop_top,
+                scale,
+                regions["probe"],
+                active=not success,
+            )
+            if self.last_static_top > 0 or self.last_static_bottom > 0:
+                img_with_overlay = self._add_static_borders_overlay(
+                    img_with_overlay,
+                    crop_top,
+                    scale,
+                    regions["static_top_band"],
+                    regions["static_bottom_band"],
+                )
+        if tail_mode:
+            img_with_overlay = self._add_hidden_content_fade(img_with_overlay)
+
         wx_img = wx.Image(img_with_overlay.width, img_with_overlay.height)
         wx_img.SetData(img_with_overlay.convert("RGB").tobytes())
         bmp = wx_img.ConvertToBitmap()
 
         self.image_ctrl.SetBitmap(bmp)
+        self.panel.Layout()
         self.panel.Refresh()
 
-        # Return color to black after a moment (Visual flash effect)
-        wx.CallLater(500, self.panel.Refresh)
+    def _add_hidden_content_fade(self, img_resized):
+        from PIL import Image
 
-    def _add_latest_slice_focus(self, img_resized, crop_top, scale):
-        from PIL import Image, ImageDraw
+        fade_height = min(36, img_resized.height)
+        if fade_height <= 0:
+            return img_resized
 
-        gray_img = img_resized.convert("L").convert("RGB")
-        result = gray_img.copy()
+        overlay = Image.new("RGBA", img_resized.size, (0, 0, 0, 0))
+        alpha_band = Image.new("L", (img_resized.width, fade_height))
+        for y in range(fade_height):
+            alpha = int(150 * (1 - (y / max(1, fade_height - 1))))
+            for x in range(img_resized.width):
+                alpha_band.putpixel((x, y), alpha)
+        overlay.paste((0, 0, 0, 255), (0, 0, img_resized.width, fade_height), mask=alpha_band)
+        return Image.alpha_composite(img_resized.convert("RGBA"), overlay).convert("RGB")
 
-        slice_start = self.last_latest_slice_start
-        slice_end = self.last_latest_slice_end
-        if slice_end <= crop_top:
-            return result
+    def _color_region(self, base_img, color_source, crop_top, scale, region):
+        region_start, region_end = region
+        if region_end <= crop_top:
+            return base_img
 
-        visible_start = max(slice_start, crop_top)
-        visible_end = max(visible_start, min(slice_end, crop_top + int(img_resized.height / scale)))
+        visible_start = max(region_start, crop_top)
+        visible_end = max(visible_start, min(region_end, crop_top + int(color_source.height / scale)))
         if visible_end <= visible_start:
-            return result
+            return base_img
 
         src_top = int((visible_start - crop_top) * scale)
         src_bottom = int((visible_end - crop_top) * scale)
         if src_bottom > src_top:
-            color_band = img_resized.crop((0, src_top, img_resized.width, src_bottom))
-            result.paste(color_band, (0, src_top))
+            color_band = color_source.crop((0, src_top, color_source.width, src_bottom))
+            base_img.paste(color_band, (0, src_top))
 
-        overlay_start = max(self.last_overlap_visual_start, crop_top)
-        overlay_end = max(overlay_start, min(self.last_overlap_visual_end, crop_top + int(img_resized.height / scale)))
-        if overlay_end > overlay_start:
-            overlay = Image.new("RGBA", result.size, (0, 0, 0, 0))
-            draw = ImageDraw.Draw(overlay)
-            band_top = int((overlay_start - crop_top) * scale)
-            band_bottom = int((overlay_end - crop_top) * scale)
-            draw.rectangle(
-                [(0, band_top), (result.width, band_bottom)],
-                fill=(0, 220, 220, 80),
-                outline=(0, 255, 255, 180),
-                width=2,
-            )
-            result = Image.alpha_composite(result.convert("RGBA"), overlay).convert("RGB")
+        return base_img
 
-        return result
-
-    def _add_new_pixels_overlay(self, img_resized, crop_top, original_height, scale):
-        """Add a colored overlay to highlight the newly added pixels"""
+    def _add_match_overlay(self, img_resized, crop_top, scale, region, active=False):
         from PIL import Image, ImageDraw
 
-        # Calculate where the new pixels are in the cropped/scaled image
-        new_pixels_height_scaled = int(self.last_height_added * scale)
+        match_start, match_end = region
+        if match_end <= crop_top:
+            return img_resized
 
-        # The new pixels are at the bottom of the original image
-        new_pixels_start_original = original_height - self.last_height_added
+        visible_start = max(match_start, crop_top)
+        visible_end = max(visible_start, min(match_end, crop_top + int(img_resized.height / scale)))
+        if visible_end <= visible_start:
+            return img_resized
 
-        # Check if the new pixels are visible in our crop
-        if new_pixels_start_original >= crop_top:
-            # New pixels are visible
-            new_pixels_start_in_crop = new_pixels_start_original - crop_top
-            new_pixels_start_scaled = int(new_pixels_start_in_crop * scale)
-
-            # Create overlay
-            overlay = Image.new('RGBA', img_resized.size, (0, 0, 0, 0))
-            draw = ImageDraw.Draw(overlay)
-
-            # Draw semi-transparent rectangle over new pixels
-            draw.rectangle([
-                (0, new_pixels_start_scaled),
-                (img_resized.width, img_resized.height)
-            ], fill=(255, 255, 0, 80))  # Yellow with transparency
-
-            # Composite overlay onto image
-            img_rgba = img_resized.convert('RGBA')
-            result = Image.alpha_composite(img_rgba, overlay)
-            return result.convert('RGB')
-
-        return img_resized
-
-    def _add_static_borders_overlay(self, img_resized, crop_top, original_height, scale):
-        """Add colored overlays to highlight static top/bottom borders"""
-        from PIL import Image, ImageDraw
-
-        # Create overlay
-        overlay = Image.new('RGBA', img_resized.size, (0, 0, 0, 0))
+        band_top = int((visible_start - crop_top) * scale)
+        band_bottom = int((visible_end - crop_top) * scale)
+        overlay = Image.new("RGBA", img_resized.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
-        # Static top border (red)
-        if self.last_static_top > 0:
-            # The static top is at the bottom of the merged image (where new content was added)
-            # It corresponds to the top of the newly captured slice
-            static_top_start_original = original_height - self.last_height_added
-            static_top_end_original = static_top_start_original + self.last_static_top
+        if active or self.last_match_status == "candidate":
+            fill = (232, 178, 88, 26)
+            edge = (244, 202, 132, 84)
+        else:
+            fill = (92, 164, 156, 18)
+            edge = (132, 198, 190, 56)
 
-            # Check if visible in our crop
-            if static_top_start_original >= crop_top and static_top_end_original > crop_top:
-                start_in_crop = max(0, static_top_start_original - crop_top)
-                end_in_crop = min(img_resized.height / scale, static_top_end_original - crop_top)
+        draw.rectangle([(0, band_top), (img_resized.width, band_bottom)], fill=fill)
+        draw.line([(0, band_top), (img_resized.width, band_top)], fill=edge, width=1)
+        draw.line([(0, max(band_top, band_bottom - 1)), (img_resized.width, max(band_top, band_bottom - 1))], fill=edge, width=1)
+        return Image.alpha_composite(img_resized.convert("RGBA"), overlay).convert("RGB")
 
-                start_scaled = int(start_in_crop * scale)
-                end_scaled = int(end_in_crop * scale)
+    def _add_static_borders_overlay(self, img_resized, crop_top, scale, static_top_band, static_bottom_band):
+        from PIL import Image, ImageDraw
 
-                if end_scaled > start_scaled:
-                    draw.rectangle([
-                        (0, start_scaled),
-                        (img_resized.width, end_scaled)
-                    ], fill=(255, 0, 0, 60))  # Red with transparency
+        overlay = Image.new('RGBA', img_resized.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        if static_top_band[1] <= static_top_band[0] and static_bottom_band[1] <= static_bottom_band[0]:
+            return img_resized
 
-        # Static bottom border (blue)
-        if self.last_static_bottom > 0:
-            # The static bottom is at the very bottom of the newly added content
-            static_bottom_start_original = original_height - self.last_static_bottom
-            static_bottom_end_original = original_height
+        visible_limit = crop_top + int(img_resized.height / scale)
 
-            # Check if visible in our crop
-            if static_bottom_start_original >= crop_top and static_bottom_end_original > crop_top:
-                start_in_crop = max(0, static_bottom_start_original - crop_top)
-                end_in_crop = min(img_resized.height / scale, static_bottom_end_original - crop_top)
+        def draw_band(start, end, fill, edge):
+            visible_start = max(start, crop_top)
+            visible_end = min(end, visible_limit)
+            if visible_end <= visible_start:
+                return
 
-                start_scaled = int(start_in_crop * scale)
-                end_scaled = int(end_in_crop * scale)
+            band_top = int((visible_start - crop_top) * scale)
+            band_bottom = int((visible_end - crop_top) * scale)
+            draw.rectangle([(0, band_top), (img_resized.width, band_bottom)], fill=fill)
+            draw.line([(0, band_top), (img_resized.width, band_top)], fill=edge, width=1)
+            draw.line([(0, max(band_top, band_bottom - 1)), (img_resized.width, max(band_top, band_bottom - 1))], fill=edge, width=1)
 
-                if end_scaled > start_scaled:
-                    draw.rectangle([
-                        (0, start_scaled),
-                        (img_resized.width, end_scaled)
-                    ], fill=(0, 0, 255, 60))  # Blue with transparency
+        if static_top_band[1] > static_top_band[0]:
+            draw_band(
+                static_top_band[0],
+                static_top_band[1],
+                (0, 0, 0, 0),
+                (214, 118, 94, 82),
+            )
 
-        # Composite overlay onto image
-        img_rgba = img_resized.convert('RGBA')
-        result = Image.alpha_composite(img_rgba, overlay)
+        if static_bottom_band[1] > static_bottom_band[0]:
+            draw_band(
+                static_bottom_band[0],
+                static_bottom_band[1],
+                (0, 0, 0, 0),
+                (108, 146, 214, 82),
+            )
+
+        result = Image.alpha_composite(img_resized.convert('RGBA'), overlay)
         return result.convert('RGB')

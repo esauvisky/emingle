@@ -22,7 +22,7 @@ def test_failed_match_exposes_candidate_footprint_and_probe_band(
     assert merged.height == 400
     assert meta["match_status"] == "candidate"
     assert meta["matched_region_start"] == 60
-    assert meta["matched_region_end"] == 200
+    assert meta["matched_region_end"] == 260
     assert meta["overlap_visual_start"] == 110
     assert meta["overlap_visual_end"] == 134
 
@@ -38,6 +38,6 @@ def test_successful_merge_exposes_full_newest_screenshot_footprint_and_probe_ban
     assert merged.height == 260
     assert meta["match_status"] == "merged"
     assert meta["matched_region_start"] == 60
-    assert meta["matched_region_end"] == 200
+    assert meta["matched_region_end"] == 260
     assert meta["overlap_visual_start"] == 110
     assert meta["overlap_visual_end"] == 134
