@@ -39,6 +39,7 @@ status_state = {
     "next_capture_in": None,
     "last_result": "",
     "recommendation": "",
+    "hover_hint": None,
 }
 
 
@@ -153,6 +154,10 @@ def on_cancel():
     publish_status(capture_state="cancelled", recommendation="Closing without copying the stitched image")
 
 
+def on_preview_hover(label):
+    publish_status(hover_hint=f"hover: {label}" if label else None)
+
+
 def merge_worker_loop(preview_window, keyboard_listener):
     global full_merged_image, successful_merge_count, undo_stack
 
@@ -232,6 +237,9 @@ def merge_worker_loop(preview_window, keyboard_listener):
                     "debounce_time": max(0.0, candidate["captured_at"] - candidate["scroll_timestamp"]),
                     "static_top": merge_metadata["static_top"],
                     "static_bottom": merge_metadata["static_bottom"],
+                    "match_status": merge_metadata["match_status"],
+                    "matched_region_start": merge_metadata["matched_region_start"],
+                    "matched_region_end": merge_metadata["matched_region_end"],
                     "latest_slice_start": merge_metadata["latest_slice_start"],
                     "latest_slice_end": merge_metadata["latest_slice_end"],
                     "overlap_visual_start": merge_metadata["overlap_visual_start"],
@@ -239,6 +247,12 @@ def merge_worker_loop(preview_window, keyboard_listener):
                 }
             else:
                 debug_info = {
+                    "height_added": height_added,
+                    "static_top": merge_metadata["static_top"],
+                    "static_bottom": merge_metadata["static_bottom"],
+                    "match_status": merge_metadata["match_status"],
+                    "matched_region_start": merge_metadata["matched_region_start"],
+                    "matched_region_end": merge_metadata["matched_region_end"],
                     "latest_slice_start": merge_metadata["latest_slice_start"],
                     "latest_slice_end": merge_metadata["latest_slice_end"],
                     "overlap_visual_start": merge_metadata["overlap_visual_start"],
@@ -259,14 +273,39 @@ def merge_worker_loop(preview_window, keyboard_listener):
             with state_lock:
                 current_image = full_merged_image.copy() if full_merged_image is not None else base_image.copy()
 
-            wx.CallAfter(preview_window.update_image, current_image, "MISMATCH! Scroll UP slightly.", False)
+            failure_debug = None
+            failure_last_result = "Merge failed; the new screenshot did not overlap enough"
+            failure_recommendation = "Scroll back slightly and let the next capture include more overlap"
+
+            if merge_metadata.get("matched_region_start") is not None:
+                failure_debug = {
+                    "static_top": merge_metadata["static_top"],
+                    "static_bottom": merge_metadata["static_bottom"],
+                    "match_status": merge_metadata["match_status"],
+                    "matched_region_start": merge_metadata["matched_region_start"],
+                    "matched_region_end": merge_metadata["matched_region_end"],
+                    "overlap_visual_start": merge_metadata["overlap_visual_start"],
+                    "overlap_visual_end": merge_metadata["overlap_visual_end"],
+                }
+                if Config["DEBUG_MODE"]:
+                    failure_debug.update({
+                        "total_height": current_image.height,
+                        "height_added": 0,
+                        "processing_time": time.time() - merge_started_at,
+                        "debounce_time": max(0.0, candidate["captured_at"] - candidate["scroll_timestamp"]),
+                    })
+
+                failure_last_result = "Capture matched earlier content but did not extend the stitch"
+                failure_recommendation = "Scroll farther so the colored slice moves closer to the bottom before capturing again"
+
+            wx.CallAfter(preview_window.update_image, current_image, "MISMATCH! Scroll UP slightly.", False, failure_debug)
             publish_status(
                 preview_window,
                 merge_state="idle",
                 merge_progress=1.0,
                 merge_phase="failed",
-                last_result="Merge failed; the new screenshot did not overlap enough",
-                recommendation="Scroll back slightly and let the next capture include more overlap",
+                last_result=failure_last_result,
+                recommendation=failure_recommendation,
             )
 
         candidate_queue.task_done()
@@ -317,7 +356,8 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
         recommendation="Scroll until the latest visible content is close to the bottom, then pause briefly",
     )
 
-    last_processed_time = time.time()
+    last_seen_scroll = mouse_listener.last_scroll_time
+    pending_scroll_time = None
     last_status_publish = 0.0
 
     while capture_running and not keyboard_listener.exit_event:
@@ -327,8 +367,12 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
         scroll_settled = False
         next_capture_in = None
 
-        if last_scroll > last_processed_time:
-            time_since_scroll = now - last_scroll
+        if last_scroll > last_seen_scroll:
+            last_seen_scroll = last_scroll
+            pending_scroll_time = last_scroll
+
+        if pending_scroll_time is not None:
+            time_since_scroll = now - pending_scroll_time
             if time_since_scroll < DEBOUNCE_TIME:
                 next_capture_in = DEBOUNCE_TIME - time_since_scroll
             else:
@@ -350,14 +394,11 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
                 publish_status(
                     preview_window,
                     capture_state="queue full",
-                    next_capture_in=None,
+                    next_capture_in=next_capture_in,
                     last_result="Skipped a capture because the queue is full",
                     recommendation="Pause scrolling until queued captures have merged",
                 )
             else:
-                if scroll_settled:
-                    last_processed_time = last_scroll
-
                 publish_status(
                     preview_window,
                     capture_state="capturing screenshot",
@@ -368,12 +409,15 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
 
                 captured_at = time.time()
                 new_candidate = capture_screenshot(region, preview_window)
+                capture_scroll_time = pending_scroll_time if scroll_settled and pending_scroll_time is not None else captured_at
                 candidate_queue.put_nowait({
                     "image": new_candidate,
                     "captured_at": captured_at,
                     "captured_at_ns": time.time_ns(),
-                    "scroll_timestamp": last_scroll if scroll_settled else captured_at,
+                    "scroll_timestamp": capture_scroll_time,
                 })
+                if scroll_settled:
+                    pending_scroll_time = None
                 publish_status(
                     preview_window,
                     capture_state="candidate queued",
@@ -389,7 +433,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
             elif manual_triggered:
                 capture_state = "manual capture requested"
                 recommendation = "Hold steady for the manual capture"
-            elif last_scroll <= last_processed_time:
+            elif pending_scroll_time is None:
                 capture_state = "waiting for scroll" if scroll_trigger_enabled else "auto capture disabled"
                 recommendation = (
                     "Scroll down until the color slice is almost out of view"
@@ -492,6 +536,7 @@ def main():
         manual_callback=on_manual_trigger,
         undo_callback=on_undo_last,
         cancel_callback=on_cancel,
+        hover_callback=on_preview_hover,
     )
     globals()["preview_window"] = preview
 

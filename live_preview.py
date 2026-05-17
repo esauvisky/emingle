@@ -13,6 +13,18 @@ def next_preview_zoom(current_zoom, wheel_rotation):
     return clamp_preview_zoom(current_zoom * factor)
 
 
+def describe_preview_region(pointer_y, footprint, probe, static_top_band, static_bottom_band):
+    if probe[0] <= pointer_y < probe[1]:
+        return "matched probe used for alignment"
+    if static_top_band[0] <= pointer_y < static_top_band[1]:
+        return "ignored static top border"
+    if static_bottom_band[0] <= pointer_y < static_bottom_band[1]:
+        return "ignored static bottom border"
+    if footprint[0] <= pointer_y < footprint[1]:
+        return "relevant screenshot footprint"
+    return "stitched history"
+
+
 def compute_semantic_regions(
     *,
     image_height,
@@ -64,7 +76,7 @@ def compute_semantic_regions(
 
 
 class LivePreviewFrame(wx.Frame):
-    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None):
+    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None, hover_callback=None):
         # Geometry defaults are refined after controls exist and displays are inspected.
         self.initial_width = 400 if not debug_mode else 500
         self.initial_height = 800  # Increased to fit new controls
@@ -87,8 +99,10 @@ class LivePreviewFrame(wx.Frame):
         self.manual_callback = manual_callback
         self.undo_callback = undo_callback
         self.cancel_callback = cancel_callback
+        self.hover_callback = hover_callback
         self._capture_hidden = False
         self._capture_restore_position = None
+        self._last_hover_regions = None
 
         self.panel = wx.Panel(self)
         self.panel.SetBackgroundColour(wx.BLACK)
@@ -185,6 +199,8 @@ class LivePreviewFrame(wx.Frame):
         # Image Display Area
         self.image_ctrl = wx.StaticBitmap(self.panel)
         self.image_ctrl.Bind(wx.EVT_MOUSEWHEEL, self._on_preview_mousewheel)
+        self.image_ctrl.Bind(wx.EVT_MOTION, self._on_preview_hover)
+        self.image_ctrl.Bind(wx.EVT_LEAVE_WINDOW, self._on_preview_leave)
         self.sizer.Add(self.image_ctrl, 1, wx.EXPAND | wx.ALL, 5)
 
         self.status_panel = wx.Panel(self.panel)
@@ -238,6 +254,7 @@ class LivePreviewFrame(wx.Frame):
         merge_phase = status_info.get('merge_phase', '')
         last_result = status_info.get('last_result', '')
         recommendation = status_info.get('recommendation', '')
+        hover_hint = status_info.get('hover_hint')
 
         next_capture_text = "next scroll"
         if next_capture is not None:
@@ -249,7 +266,7 @@ class LivePreviewFrame(wx.Frame):
         if merge_phase:
             merge_progress_text = f"{merge_progress_text}, {merge_phase}"
 
-        summary = recommendation or last_result or "Scroll until the color slice nears the bottom"
+        summary = hover_hint or recommendation or last_result or "Scroll until the color slice nears the bottom"
 
         return "\n".join([
             f"{capture_state} | {merge_progress_text}",
@@ -455,6 +472,27 @@ class LivePreviewFrame(wx.Frame):
         self.preview_zoom = next_preview_zoom(self.preview_zoom, event.GetWheelRotation())
         self._draw_preview()
 
+    def _on_preview_hover(self, event):
+        if not self.hover_callback or not self._last_hover_regions:
+            event.Skip()
+            return
+
+        y = event.GetPosition().y
+        label = describe_preview_region(
+            pointer_y=y,
+            footprint=self._last_hover_regions["footprint"],
+            probe=self._last_hover_regions["probe"],
+            static_top_band=self._last_hover_regions["static_top_band"],
+            static_bottom_band=self._last_hover_regions["static_bottom_band"],
+        )
+        self.hover_callback(label)
+        event.Skip()
+
+    def _on_preview_leave(self, event):
+        if self.hover_callback:
+            self.hover_callback(None)
+        event.Skip()
+
     def update_image(self, pil_image, status="Merged", success=True, debug_info=None):
         """
         Updates the preview with the BOTTOM part of the huge merged image.
@@ -579,6 +617,15 @@ class LivePreviewFrame(wx.Frame):
         if tail_mode:
             img_with_overlay = self._add_hidden_content_fade(img_with_overlay)
 
+        self._last_hover_regions = self._build_hover_regions(
+            crop_top,
+            scale,
+            disp_h,
+            regions["footprint"],
+            regions["probe"],
+            regions["static_top_band"],
+            regions["static_bottom_band"],
+        )
         img_with_overlay = self._apply_preview_zoom(img_with_overlay)
 
         wx_img = wx.Image(img_with_overlay.width, img_with_overlay.height)
@@ -625,6 +672,63 @@ class LivePreviewFrame(wx.Frame):
         paste_y = max(0, base_h - scaled_h)
         canvas.paste(scaled, (paste_x, paste_y))
         return canvas
+
+    def _source_region_to_display(self, region, crop_top, scale, display_height):
+        region_start, region_end = region
+        if region_end <= region_start:
+            return (0, 0)
+
+        visible_start = max(region_start, crop_top)
+        visible_end = min(region_end, crop_top + int(display_height / scale))
+        if visible_end <= visible_start:
+            return (0, 0)
+
+        start = int((visible_start - crop_top) * scale)
+        end = int((visible_end - crop_top) * scale)
+        return (max(0, start), max(max(0, start), end))
+
+    def _transform_display_region_for_zoom(self, region, base_height):
+        start, end = region
+        if end <= start:
+            return (0, 0)
+
+        zoom = self.preview_zoom
+        if abs(zoom - 1.0) < 0.001:
+            return (start, end)
+
+        scaled_h = max(1, int(round(base_height * zoom)))
+        if zoom > 1.0:
+            top_crop = max(0, scaled_h - base_height)
+            new_start = int(round(start * zoom - top_crop))
+            new_end = int(round(end * zoom - top_crop))
+        else:
+            paste_y = max(0, base_height - scaled_h)
+            new_start = int(round(paste_y + start * zoom))
+            new_end = int(round(paste_y + end * zoom))
+
+        new_start = max(0, min(base_height, new_start))
+        new_end = max(new_start, min(base_height, new_end))
+        return (new_start, new_end)
+
+    def _build_hover_regions(self, crop_top, scale, display_height, footprint, probe, static_top_band, static_bottom_band):
+        return {
+            "footprint": self._transform_display_region_for_zoom(
+                self._source_region_to_display(footprint, crop_top, scale, display_height),
+                display_height,
+            ),
+            "probe": self._transform_display_region_for_zoom(
+                self._source_region_to_display(probe, crop_top, scale, display_height),
+                display_height,
+            ),
+            "static_top_band": self._transform_display_region_for_zoom(
+                self._source_region_to_display(static_top_band, crop_top, scale, display_height),
+                display_height,
+            ),
+            "static_bottom_band": self._transform_display_region_for_zoom(
+                self._source_region_to_display(static_bottom_band, crop_top, scale, display_height),
+                display_height,
+            ),
+        }
 
     def _color_region(self, base_img, color_source, crop_top, scale, region):
         region_start, region_end = region
