@@ -240,7 +240,11 @@ class ImageMerger:
                 'static_top': t_crop,
                 'static_bottom': b_crop,
                 'overlap_height': 0,
-                'shift': None
+                'shift': None,
+                'latest_slice_start': 0,
+                'latest_slice_end': 0,
+                'overlap_visual_start': 0,
+                'overlap_visual_end': 0,
             }
             return base_img, metadata
 
@@ -256,7 +260,11 @@ class ImageMerger:
                 'static_top': t_crop,
                 'static_bottom': b_crop,
                 'overlap_height': overlap_height,
-                'shift': shift
+                'shift': shift,
+                'latest_slice_start': 0,
+                'latest_slice_end': 0,
+                'overlap_visual_start': 0,
+                'overlap_visual_end': 0,
             }
             return base_img, metadata
 
@@ -271,11 +279,17 @@ class ImageMerger:
 
         ImageMerger._report_progress(progress_callback, 0.96, "building stitched image")
         merged = np.vstack((part_a, part_b_1, part_b_2, part_c))
+        latest_slice_start = shift + cut_point
+        latest_slice_end = merged.shape[0]
         metadata = {
             'static_top': t_crop,
             'static_bottom': b_crop,
             'overlap_height': overlap_height,
-            'shift': shift
+            'shift': shift,
+            'latest_slice_start': latest_slice_start,
+            'latest_slice_end': latest_slice_end,
+            'overlap_visual_start': latest_slice_start,
+            'overlap_visual_end': shift + overlap_height,
         }
         ImageMerger._report_progress(progress_callback, 1.0, "done")
         return Image.fromarray(merged), metadata

@@ -232,6 +232,17 @@ def merge_worker_loop(preview_window, keyboard_listener):
                     "debounce_time": max(0.0, candidate["captured_at"] - candidate["scroll_timestamp"]),
                     "static_top": merge_metadata["static_top"],
                     "static_bottom": merge_metadata["static_bottom"],
+                    "latest_slice_start": merge_metadata["latest_slice_start"],
+                    "latest_slice_end": merge_metadata["latest_slice_end"],
+                    "overlap_visual_start": merge_metadata["overlap_visual_start"],
+                    "overlap_visual_end": merge_metadata["overlap_visual_end"],
+                }
+            else:
+                debug_info = {
+                    "latest_slice_start": merge_metadata["latest_slice_start"],
+                    "latest_slice_end": merge_metadata["latest_slice_end"],
+                    "overlap_visual_start": merge_metadata["overlap_visual_start"],
+                    "overlap_visual_end": merge_metadata["overlap_visual_end"],
                 }
 
             wx.CallAfter(preview_window.update_image, merged_image, "Merged! Keep scrolling.", True, debug_info)

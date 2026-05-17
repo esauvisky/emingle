@@ -134,6 +134,10 @@ class LivePreviewFrame(wx.Frame):
         self.last_height_added = 0
         self.last_static_top = 0
         self.last_static_bottom = 0
+        self.last_latest_slice_start = 0
+        self.last_latest_slice_end = 0
+        self.last_overlap_visual_start = 0
+        self.last_overlap_visual_end = 0
         self.Show()
         self.panel.Layout()
         self._apply_initial_geometry()
@@ -450,6 +454,14 @@ class LivePreviewFrame(wx.Frame):
                 self.last_static_top = debug_info['static_top']
             if 'static_bottom' in debug_info:
                 self.last_static_bottom = debug_info['static_bottom']
+            if 'latest_slice_start' in debug_info:
+                self.last_latest_slice_start = debug_info['latest_slice_start']
+            if 'latest_slice_end' in debug_info:
+                self.last_latest_slice_end = debug_info['latest_slice_end']
+            if 'overlap_visual_start' in debug_info:
+                self.last_overlap_visual_start = debug_info['overlap_visual_start']
+            if 'overlap_visual_end' in debug_info:
+                self.last_overlap_visual_end = debug_info['overlap_visual_end']
 
         # Update debug info if provided
         if self.debug_mode and debug_info:
@@ -503,7 +515,9 @@ class LivePreviewFrame(wx.Frame):
 
         # 4. Add overlays for newly added pixels and static borders
         img_with_overlay = img_resized
-        if success and self.last_height_added > 0:
+        if success and self.last_latest_slice_end > self.last_latest_slice_start:
+            img_with_overlay = self._add_latest_slice_focus(img_with_overlay, crop_top, scale)
+        elif success and self.last_height_added > 0:
             img_with_overlay = self._add_new_pixels_overlay(img_with_overlay, crop_top, h, scale)
         if success and (self.last_static_top > 0 or self.last_static_bottom > 0):
             img_with_overlay = self._add_static_borders_overlay(img_with_overlay, crop_top, h, scale)
@@ -518,6 +532,45 @@ class LivePreviewFrame(wx.Frame):
 
         # Return color to black after a moment (Visual flash effect)
         wx.CallLater(500, self.panel.Refresh)
+
+    def _add_latest_slice_focus(self, img_resized, crop_top, scale):
+        from PIL import Image, ImageDraw
+
+        gray_img = img_resized.convert("L").convert("RGB")
+        result = gray_img.copy()
+
+        slice_start = self.last_latest_slice_start
+        slice_end = self.last_latest_slice_end
+        if slice_end <= crop_top:
+            return result
+
+        visible_start = max(slice_start, crop_top)
+        visible_end = max(visible_start, min(slice_end, crop_top + int(img_resized.height / scale)))
+        if visible_end <= visible_start:
+            return result
+
+        src_top = int((visible_start - crop_top) * scale)
+        src_bottom = int((visible_end - crop_top) * scale)
+        if src_bottom > src_top:
+            color_band = img_resized.crop((0, src_top, img_resized.width, src_bottom))
+            result.paste(color_band, (0, src_top))
+
+        overlay_start = max(self.last_overlap_visual_start, crop_top)
+        overlay_end = max(overlay_start, min(self.last_overlap_visual_end, crop_top + int(img_resized.height / scale)))
+        if overlay_end > overlay_start:
+            overlay = Image.new("RGBA", result.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+            band_top = int((overlay_start - crop_top) * scale)
+            band_bottom = int((overlay_end - crop_top) * scale)
+            draw.rectangle(
+                [(0, band_top), (result.width, band_bottom)],
+                fill=(0, 220, 220, 80),
+                outline=(0, 255, 255, 180),
+                width=2,
+            )
+            result = Image.alpha_composite(result.convert("RGBA"), overlay).convert("RGB")
+
+        return result
 
     def _add_new_pixels_overlay(self, img_resized, crop_top, original_height, scale):
         """Add a colored overlay to highlight the newly added pixels"""
