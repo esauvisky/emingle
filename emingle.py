@@ -24,11 +24,56 @@ capture_running = True
 manual_trigger_event = threading.Event()
 undo_stack = []
 
-def capture_screenshot(monitor):
+def _capture_screen_region(monitor):
     with mss.mss() as sct:
         sct_img = sct.grab(monitor)
         img = Image.frombytes('RGB', sct_img.size, sct_img.rgb)
         return img
+
+def run_on_ui_thread(func, *args, **kwargs):
+    if wx.IsMainThread():
+        return func(*args, **kwargs)
+
+    completed = threading.Event()
+    result = {}
+
+    def wrapper():
+        try:
+            result["value"] = func(*args, **kwargs)
+        except Exception as exc:
+            result["error"] = exc
+        finally:
+            completed.set()
+
+    wx.CallAfter(wrapper)
+    completed.wait()
+
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+def capture_screenshot(monitor, preview_window=None, settle_delay=0.12):
+    preview_was_hidden = False
+
+    if preview_window is not None:
+        try:
+            if run_on_ui_thread(preview_window.overlaps_region, monitor):
+                logger.debug("Preview overlaps capture region; hiding it before screenshot.")
+                preview_was_hidden = run_on_ui_thread(preview_window.hide_for_capture)
+                if preview_was_hidden:
+                    time.sleep(settle_delay)
+        except Exception as exc:
+            logger.warning(f"Preview overlap guard failed: {exc}")
+
+    try:
+        return _capture_screen_region(monitor)
+    finally:
+        if preview_window is not None and preview_was_hidden:
+            try:
+                run_on_ui_thread(preview_window.restore_after_capture, preview_was_hidden)
+                time.sleep(0.05)
+            except Exception as exc:
+                logger.warning(f"Preview restore failed: {exc}")
 
 def on_manual_trigger():
     """Callback function for manual trigger button"""
@@ -53,7 +98,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
     logger.info("Step 1: Capturing initial base image...")
 
     # 1. Initial Capture
-    base_img = capture_screenshot(region)
+    base_img = capture_screenshot(region, preview_window)
     full_merged_image = base_img
 
     wx.CallAfter(preview_window.update_image, full_merged_image, "Started. Scroll & Stop to capture.", True)
@@ -105,7 +150,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
                 last_processed_time = last_scroll
 
             wx.CallAfter(preview_window.update_image, full_merged_image, "Capturing...", True)
-            new_candidate = capture_screenshot(region)
+            new_candidate = capture_screenshot(region, preview_window)
 
             wx.CallAfter(preview_window.update_image, full_merged_image, "Merging...", True)
 
@@ -198,7 +243,7 @@ def main():
         args=(selection, preview, mouse_listener, key_listener),
         daemon=True
     )
-    t.start()
+    wx.CallAfter(t.start)
 
     logger.info("System Ready.")
     logger.info("1. Scroll the content.")

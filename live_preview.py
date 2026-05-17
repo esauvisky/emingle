@@ -16,6 +16,8 @@ class LivePreviewFrame(wx.Frame):
         self.selection_region = selection_region
         self.manual_callback = manual_callback
         self.undo_callback = undo_callback
+        self._capture_hidden = False
+        self._capture_restore_position = None
 
         # Position relative to selection region
         self._position_window()
@@ -118,6 +120,7 @@ class LivePreviewFrame(wx.Frame):
         self.last_static_top = 0
         self.last_static_bottom = 0
         self.Show()
+        self.ensure_safe_position()
 
     def get_tolerance(self):
         """Get current tolerance value from slider"""
@@ -151,6 +154,194 @@ class LivePreviewFrame(wx.Frame):
         else:
             # Fallback to top-right corner
             self.SetPosition((display_width - self.initial_width - 50, 50))
+
+    def _region_to_rect(self, region=None):
+        region = region or self.selection_region
+        if not region:
+            return None
+        return wx.Rect(region['left'], region['top'], region['width'], region['height'])
+
+    def _rect_intersects(self, rect_a, rect_b):
+        if rect_a is None or rect_b is None:
+            return False
+        return not (
+            rect_a.x + rect_a.width <= rect_b.x or
+            rect_b.x + rect_b.width <= rect_a.x or
+            rect_a.y + rect_a.height <= rect_b.y or
+            rect_b.y + rect_b.height <= rect_a.y
+        )
+
+    def _rect_within(self, inner_rect, outer_rect):
+        return (
+            inner_rect.x >= outer_rect.x and
+            inner_rect.y >= outer_rect.y and
+            inner_rect.x + inner_rect.width <= outer_rect.x + outer_rect.width and
+            inner_rect.y + inner_rect.height <= outer_rect.y + outer_rect.height
+        )
+
+    def _build_rect(self, x, y, width, height):
+        return wx.Rect(int(x), int(y), int(width), int(height))
+
+    def _get_display_rects(self):
+        rects = []
+        for idx in range(wx.Display.GetCount()):
+            rects.append(wx.Display(idx).GetClientArea())
+        return rects
+
+    def _add_candidate_rect(self, candidates, seen_positions, display_rect, x, y, width, height, priority, selection_rect):
+        if width > display_rect.width or height > display_rect.height:
+            return
+
+        max_x = display_rect.x + display_rect.width - width
+        max_y = display_rect.y + display_rect.height - height
+        clamped_x = max(display_rect.x, min(int(x), max_x))
+        clamped_y = max(display_rect.y, min(int(y), max_y))
+        key = (clamped_x, clamped_y)
+        if key in seen_positions:
+            return
+        seen_positions.add(key)
+
+        candidate = self._build_rect(clamped_x, clamped_y, width, height)
+        if not self._rect_within(candidate, display_rect):
+            return
+        if self._rect_intersects(candidate, selection_rect):
+            return
+
+        selection_center_x = selection_rect.x + (selection_rect.width / 2)
+        selection_center_y = selection_rect.y + (selection_rect.height / 2)
+        candidate_center_x = candidate.x + (candidate.width / 2)
+        candidate_center_y = candidate.y + (candidate.height / 2)
+        distance = abs(candidate_center_x - selection_center_x) + abs(candidate_center_y - selection_center_y)
+        score = (priority * 1000000) + distance
+        candidates.append((score, candidate))
+
+    def _find_safe_preview_rect(self):
+        selection_rect = self._region_to_rect()
+        if selection_rect is None:
+            return None
+
+        margin = 10
+        window_size = self.GetSize()
+        width, height = window_size.width, window_size.height
+        candidates = []
+        seen_positions = set()
+
+        vertical_positions = (
+            selection_rect.y,
+            selection_rect.y + selection_rect.height - height,
+            selection_rect.y + ((selection_rect.height - height) // 2),
+        )
+        horizontal_positions = (
+            selection_rect.x,
+            selection_rect.x + selection_rect.width - width,
+            selection_rect.x + ((selection_rect.width - width) // 2),
+        )
+
+        for display_rect in self._get_display_rects():
+            for pos_y in vertical_positions:
+                self._add_candidate_rect(
+                    candidates,
+                    seen_positions,
+                    display_rect,
+                    selection_rect.x + selection_rect.width + margin,
+                    pos_y,
+                    width,
+                    height,
+                    priority=0,
+                    selection_rect=selection_rect,
+                )
+                self._add_candidate_rect(
+                    candidates,
+                    seen_positions,
+                    display_rect,
+                    selection_rect.x - width - margin,
+                    pos_y,
+                    width,
+                    height,
+                    priority=1,
+                    selection_rect=selection_rect,
+                )
+
+            for pos_x in horizontal_positions:
+                self._add_candidate_rect(
+                    candidates,
+                    seen_positions,
+                    display_rect,
+                    pos_x,
+                    selection_rect.y - height - margin,
+                    width,
+                    height,
+                    priority=2,
+                    selection_rect=selection_rect,
+                )
+                self._add_candidate_rect(
+                    candidates,
+                    seen_positions,
+                    display_rect,
+                    pos_x,
+                    selection_rect.y + selection_rect.height + margin,
+                    width,
+                    height,
+                    priority=3,
+                    selection_rect=selection_rect,
+                )
+
+            corner_positions = (
+                (display_rect.x, display_rect.y),
+                (display_rect.x + display_rect.width - width, display_rect.y),
+                (display_rect.x, display_rect.y + display_rect.height - height),
+                (display_rect.x + display_rect.width - width, display_rect.y + display_rect.height - height),
+            )
+            for pos_x, pos_y in corner_positions:
+                self._add_candidate_rect(
+                    candidates,
+                    seen_positions,
+                    display_rect,
+                    pos_x,
+                    pos_y,
+                    width,
+                    height,
+                    priority=4,
+                    selection_rect=selection_rect,
+                )
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
+
+    def ensure_safe_position(self):
+        safe_rect = self._find_safe_preview_rect()
+        if safe_rect is None:
+            return False
+        self.SetPosition((safe_rect.x, safe_rect.y))
+        return True
+
+    def get_window_rect(self):
+        return self.GetScreenRect()
+
+    def overlaps_region(self, region=None):
+        return self._rect_intersects(self.get_window_rect(), self._region_to_rect(region))
+
+    def hide_for_capture(self):
+        was_shown = self.IsShown()
+        if was_shown:
+            self._capture_restore_position = self.GetPosition()
+            self.Hide()
+            self._capture_hidden = True
+        return was_shown
+
+    def restore_after_capture(self, was_shown):
+        if was_shown:
+            if hasattr(self, "ShowWithoutActivating"):
+                self.ShowWithoutActivating()
+            else:
+                self.Show()
+            if self._capture_restore_position is not None:
+                self.SetPosition(self._capture_restore_position)
+            self._capture_hidden = False
+            self._capture_restore_position = None
 
     def update_image(self, pil_image, status="Merged", success=True, debug_info=None):
         """
