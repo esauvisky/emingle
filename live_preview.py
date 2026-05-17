@@ -3,6 +3,16 @@ import numpy as np
 from PIL import Image
 
 
+def clamp_preview_zoom(value):
+    return max(0.25, min(3.0, round(value, 3)))
+
+
+def next_preview_zoom(current_zoom, wheel_rotation):
+    direction = 1 if wheel_rotation > 0 else -1
+    factor = 1.15 if direction > 0 else (1 / 1.15)
+    return clamp_preview_zoom(current_zoom * factor)
+
+
 def compute_semantic_regions(
     *,
     image_height,
@@ -67,6 +77,7 @@ class LivePreviewFrame(wx.Frame):
         self.capture_source_width = selection_region['width'] if selection_region else self.initial_width
         self._render_image = None
         self._render_success = True
+        self.preview_zoom = 1.0
 
         style = wx.STAY_ON_TOP | wx.FRAME_TOOL_WINDOW | wx.CAPTION | wx.RESIZE_BORDER
         super().__init__(None, title="Live Stitcher", size=(self.initial_width, self.initial_height), style=style)
@@ -173,6 +184,7 @@ class LivePreviewFrame(wx.Frame):
 
         # Image Display Area
         self.image_ctrl = wx.StaticBitmap(self.panel)
+        self.image_ctrl.Bind(wx.EVT_MOUSEWHEEL, self._on_preview_mousewheel)
         self.sizer.Add(self.image_ctrl, 1, wx.EXPAND | wx.ALL, 5)
 
         self.status_panel = wx.Panel(self.panel)
@@ -435,6 +447,14 @@ class LivePreviewFrame(wx.Frame):
             self._capture_hidden = False
             self._capture_restore_position = None
 
+    def _on_preview_mousewheel(self, event):
+        if not event.ControlDown():
+            event.Skip()
+            return
+
+        self.preview_zoom = next_preview_zoom(self.preview_zoom, event.GetWheelRotation())
+        self._draw_preview()
+
     def update_image(self, pil_image, status="Merged", success=True, debug_info=None):
         """
         Updates the preview with the BOTTOM part of the huge merged image.
@@ -559,6 +579,8 @@ class LivePreviewFrame(wx.Frame):
         if tail_mode:
             img_with_overlay = self._add_hidden_content_fade(img_with_overlay)
 
+        img_with_overlay = self._apply_preview_zoom(img_with_overlay)
+
         wx_img = wx.Image(img_with_overlay.width, img_with_overlay.height)
         wx_img.SetData(img_with_overlay.convert("RGB").tobytes())
         bmp = wx_img.ConvertToBitmap()
@@ -582,6 +604,27 @@ class LivePreviewFrame(wx.Frame):
                 alpha_band.putpixel((x, y), alpha)
         overlay.paste((0, 0, 0, 255), (0, 0, img_resized.width, fade_height), mask=alpha_band)
         return Image.alpha_composite(img_resized.convert("RGBA"), overlay).convert("RGB")
+
+    def _apply_preview_zoom(self, img_resized):
+        zoom = self.preview_zoom
+        if abs(zoom - 1.0) < 0.001:
+            return img_resized
+
+        base_w, base_h = img_resized.size
+        scaled_w = max(1, int(round(base_w * zoom)))
+        scaled_h = max(1, int(round(base_h * zoom)))
+        scaled = img_resized.resize((scaled_w, scaled_h), Image.Resampling.BOX)
+
+        if zoom > 1.0:
+            left = max(0, (scaled_w - base_w) // 2)
+            top = max(0, scaled_h - base_h)
+            return scaled.crop((left, top, left + base_w, top + base_h))
+
+        canvas = Image.new("RGB", (base_w, base_h), (0, 0, 0))
+        paste_x = max(0, (base_w - scaled_w) // 2)
+        paste_y = max(0, base_h - scaled_h)
+        canvas.paste(scaled, (paste_x, paste_y))
+        return canvas
 
     def _color_region(self, base_img, color_source, crop_top, scale, region):
         region_start, region_end = region
