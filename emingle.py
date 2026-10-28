@@ -11,6 +11,7 @@ import numpy as np
 import wx
 from PIL import Image
 from loguru import logger
+from pynput import mouse
 
 from clipboard_manager import ClipboardManager
 from image_merger import ImageMerger
@@ -29,6 +30,11 @@ DEBOUNCE_TIME = 0.5
 # A capture that matches the last merged one means the page no longer moves: the user hit the bottom and scrolled again
 BOTTOM_PIXEL_THRESHOLD = 16
 BOTTOM_MAX_CHANGED_RATIO = 0.001
+# Auto scroll starts small, then calibrates wheel clicks so each step moves about this fraction of the region,
+# leaving a wide overlap for the matcher
+AUTO_SCROLL_START_CLICKS = 2
+AUTO_SCROLL_MAX_CLICKS = 15
+AUTO_SCROLL_TARGET_RATIO = 0.4
 
 # Global State
 full_merged_image = None
@@ -36,6 +42,9 @@ capture_running = True
 manual_trigger_event = threading.Event()
 undo_stack = []
 successful_merge_count = 0
+merge_attempts = 0
+last_merge_height_added = 0  # 0 when the last attempt failed
+auto_scroll_active = threading.Event()
 candidate_queue = queue.Queue(maxsize=MAX_CAPTURE_QUEUE)
 merge_active = threading.Event()
 state_lock = threading.Lock()
@@ -163,6 +172,71 @@ def on_cancel():
     publish_status(capture_state="cancelled", recommendation="Closing without copying the stitched image")
 
 
+def on_auto_scroll(enabled):
+    if enabled:
+        auto_scroll_active.set()
+        publish_status(capture_state="auto scrolling", recommendation="Hands off the mouse; Auto Scroll stops at the bottom")
+    else:
+        auto_scroll_active.clear()
+        publish_status(capture_state="waiting for scroll", recommendation="Auto Scroll stopped; scroll manually or start it again")
+
+
+def stop_auto_scroll(preview_window, reason):
+    auto_scroll_active.clear()
+    wx.CallAfter(preview_window.set_auto_scroll, False)
+    publish_status(preview_window, last_result=reason, recommendation="Scroll manually or start Auto Scroll again")
+
+
+def auto_scroll_loop(region, preview_window, keyboard_listener):
+    controller = mouse.Controller()
+    center = (region["left"] + region["width"] // 2, region["top"] + region["height"] // 2)
+    clicks = AUTO_SCROLL_START_CLICKS
+    # Wheel clicks scrolled down since the last successful merge, to calibrate and to know how far back to go
+    net_clicks = 0
+
+    while not keyboard_listener.exit_event:
+        if not auto_scroll_active.wait(timeout=0.1):
+            continue
+        # Each step is judged on its own merge result, so let queued captures drain first
+        if merge_active.is_set() or not candidate_queue.empty():
+            time.sleep(0.05)
+            continue
+
+        with state_lock:
+            attempts_before = merge_attempts
+            last_failed = attempts_before > 0 and last_merge_height_added == 0
+
+        # Scroll events go to the window under the pointer
+        controller.position = center
+        # Never back up all the way: a capture at the last merged position would read as "reached the bottom"
+        if last_failed and net_clicks >= 2:
+            back = net_clicks // 2
+            controller.scroll(0, back)
+            net_clicks -= back
+            clicks = max(1, clicks // 2)
+            logger.info(f"Auto scroll: merge failed, back up {back} clicks")
+        elif last_failed:
+            stop_auto_scroll(preview_window, "Auto Scroll stopped: captures keep failing even with the smallest scroll")
+            continue
+        else:
+            controller.scroll(0, -clicks)
+            net_clicks += clicks
+
+        time.sleep(DEBOUNCE_TIME)
+        manual_trigger_event.set()
+
+        while merge_attempts == attempts_before and auto_scroll_active.is_set() and not keyboard_listener.exit_event:
+            time.sleep(0.05)
+
+        with state_lock:
+            height_added = last_merge_height_added if merge_attempts > attempts_before else 0
+        if height_added > 0:
+            pixels_per_click = height_added / net_clicks
+            clicks = max(1, min(AUTO_SCROLL_MAX_CLICKS, round(region["height"] * AUTO_SCROLL_TARGET_RATIO / pixels_per_click)))
+            net_clicks = 0
+            logger.info(f"Auto scroll: {pixels_per_click:.0f}px per click, next step {clicks} clicks")
+
+
 def on_preview_hover(label):
     publish_status(hover_hint=f"hover: {label}" if label else None)
 
@@ -173,7 +247,7 @@ def captures_match(a, b):
 
 
 def merge_worker_loop(preview_window, keyboard_listener):
-    global full_merged_image, successful_merge_count, undo_stack
+    global full_merged_image, successful_merge_count, undo_stack, merge_attempts, last_merge_height_added
 
     last_merged_capture = None
 
@@ -245,6 +319,8 @@ def merge_worker_loop(preview_window, keyboard_listener):
                 successful_merge_count += 1
                 merged_image = full_merged_image.copy()
                 height_added = merged_image.height - old_height
+                merge_attempts += 1
+                last_merge_height_added = height_added
             last_merged_capture = candidate["image"]
 
             logger.success(
@@ -296,6 +372,8 @@ def merge_worker_loop(preview_window, keyboard_listener):
             logger.warning("Merge failed (No overlap).")
             with state_lock:
                 current_image = full_merged_image.copy() if full_merged_image is not None else base_image.copy()
+                merge_attempts += 1
+                last_merge_height_added = 0
 
             failure_debug = None
             failure_last_result = "Merge failed; the new screenshot did not overlap enough"
@@ -408,6 +486,8 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
             scroll_trigger_enabled = preview_window.get_scroll_trigger_enabled()
         except Exception:
             pass
+        # Auto scroll triggers its own captures once the page settles; its wheel events must not queue extra ones
+        scroll_trigger_enabled = scroll_trigger_enabled and not auto_scroll_active.is_set()
 
         queue_full = candidate_queue.full()
         if (scroll_settled and scroll_trigger_enabled) or manual_triggered:
@@ -572,8 +652,10 @@ def main():
         cancel_callback=on_cancel,
         hover_callback=on_preview_hover,
         veil_callback=veil.Show,
+        auto_scroll_callback=on_auto_scroll,
     )
     globals()["preview_window"] = preview
+    threading.Thread(target=auto_scroll_loop, args=(selection, preview, key_listener), daemon=True).start()
 
     worker_thread = threading.Thread(
         target=processing_loop,

@@ -76,7 +76,7 @@ def compute_semantic_regions(
 
 
 class LivePreviewFrame(wx.Frame):
-    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None, hover_callback=None, veil_callback=None):
+    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None, hover_callback=None, veil_callback=None, auto_scroll_callback=None):
         # Geometry defaults are refined after controls exist and displays are inspected.
         self.initial_width = 400 if not debug_mode else 500
         self.initial_height = 800  # Increased to fit new controls
@@ -101,6 +101,7 @@ class LivePreviewFrame(wx.Frame):
         self.cancel_callback = cancel_callback
         self.hover_callback = hover_callback
         self.veil_callback = veil_callback
+        self.auto_scroll_callback = auto_scroll_callback
         self._capture_hidden = False
         self._capture_restore_position = None
         self._last_hover_regions = None
@@ -120,6 +121,11 @@ class LivePreviewFrame(wx.Frame):
             self.snap_button.Bind(wx.EVT_BUTTON, lambda evt: self.manual_callback())
             button_sizer.Add(self.snap_button, 1, wx.ALL | wx.EXPAND, 2)
         
+        if self.auto_scroll_callback:
+            self.auto_scroll_button = wx.ToggleButton(self.panel, label="Auto Scroll")
+            self.auto_scroll_button.Bind(wx.EVT_TOGGLEBUTTON, lambda evt: self.auto_scroll_callback(evt.IsChecked()))
+            button_sizer.Add(self.auto_scroll_button, 1, wx.ALL | wx.EXPAND, 2)
+
         if self.undo_callback:
             self.undo_button = wx.Button(self.panel, label="Undo Last")
             self.undo_button.Bind(wx.EVT_BUTTON, lambda evt: self.undo_callback())
@@ -244,6 +250,9 @@ class LivePreviewFrame(wx.Frame):
     def get_scroll_trigger_enabled(self):
         """Get current scroll trigger setting"""
         return self.scroll_trigger_checkbox.GetValue()
+
+    def set_auto_scroll(self, enabled):
+        self.auto_scroll_button.SetValue(enabled)
 
     def _on_veil_toggled(self, event):
         self.veil_callback(event.IsChecked())
