@@ -16,8 +16,9 @@ class RegionSelector:
                     total_rect.Union(rect)
                 # self.ShowFullScreen(False)
 
-                super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT )
+                super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER)
                 self.SetPosition(total_rect.GetPosition())
+                self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
                 self.SetCursor(wx.Cursor(wx.CURSOR_CROSS))
                 self.SetTransparent(30)  # Adjust transparency level
 
@@ -25,7 +26,6 @@ class RegionSelector:
                 self.Bind(wx.EVT_MOTION, self.OnMouseMove)
                 self.Bind(wx.EVT_LEFT_UP, self.OnLeftUp)
                 self.Bind(wx.EVT_PAINT, self.OnPaint)
-                self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
                 self.Bind(wx.EVT_CHAR_HOOK, self.OnCharHook)
 
                 self.start_pos = None
@@ -51,15 +51,14 @@ class RegionSelector:
                 self.Close()
 
             def OnPaint(self, event):
+                dc = wx.AutoBufferedPaintDC(self)
+                dc.SetBackground(wx.BLACK_BRUSH)
+                dc.Clear()
                 if self.start_pos and self.end_pos:
-                    dc = wx.PaintDC(self)
                     dc.SetPen(wx.Pen(wx.RED, 5))
                     dc.SetBrush(wx.RED_BRUSH)
                     rect = wx.Rect(self.start_pos, self.end_pos)
                     dc.DrawRectangle(rect)
-
-            def OnEraseBackground(self, event):
-                pass  # Prevent flickering
 
             def OnCharHook(self, event):
                 if event.GetKeyCode() == wx.WXK_ESCAPE:
