@@ -26,12 +26,12 @@ Push a `v*` tag (`git tag v1.0.0 && git push origin v1.0.0`). GitHub Actions bui
 
 ## Usage
 
-1. Select area to capture
-2. Scroll normally, wait 0.5s between scrolls
-3. When you reach the end, scroll once more (or press Escape)
+1. Select area to capture. Everything else gets dimmed while capturing (untick "Dim outside the capture area" to turn it off)
+2. Scroll normally, wait 0.5s between scrolls, or press **Auto Scroll** and keep your hands off the mouse
+3. When you reach the end, scroll once more (or press Escape). Auto Scroll stops by itself at the bottom
 4. Image is copied to clipboard
 
-Green = good, red = scroll up a bit.
+Green = good, red = scroll up a bit. Auto Scroll calibrates its step to about 40% of the area per screenshot and backs up on its own when a merge fails.
 
 ## Requirements
 
