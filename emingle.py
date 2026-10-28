@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import ctypes
 import queue
+import sys
 import threading
 import time
 
@@ -514,6 +516,11 @@ def main():
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     Config["DEBUG_MODE"] = args.debug
+
+    if sys.platform == "win32":
+        # mss makes the process per-monitor DPI aware on its first grab. Do it before any wx window
+        # exists so the selection coordinates and the captures are both in physical pixels.
+        ctypes.oledll.shcore.SetProcessDpiAwareness(2)
 
     logger.info("Select region...")
     selector = RegionSelector()
