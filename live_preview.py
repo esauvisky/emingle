@@ -75,6 +75,15 @@ def compute_semantic_regions(
     }
 
 
+SURFACE = wx.Colour(14, 14, 16)
+SURFACE_RAISED = wx.Colour(30, 30, 34)
+TEXT = wx.Colour(236, 236, 238)
+TEXT_MUTED = wx.Colour(160, 160, 168)
+PAD = 8
+GAP = 4
+AUTO_SCROLL_LABELS = {False: "Auto Scroll", True: "Stop Auto Scroll"}
+
+
 class LivePreviewFrame(wx.Frame):
     def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None, hover_callback=None, veil_callback=None, auto_scroll_callback=None):
         # Geometry defaults are refined after controls exist and displays are inspected.
@@ -107,104 +116,111 @@ class LivePreviewFrame(wx.Frame):
         self._last_hover_regions = None
 
         self.panel = wx.Panel(self)
-        self.panel.SetBackgroundColour(wx.BLACK)
+        self.panel.SetBackgroundColour(SURFACE)
 
         # UI Elements
         self.sizer = wx.BoxSizer(wx.VERTICAL)
 
 
-        # Control buttons
-        button_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
+        # Toolbar: capture actions on the left, undo and the way out on the right. Kept in its own panel so the
+        # geometry code counts it as one row instead of summing every button
+        toolbar = wx.Panel(self.panel)
+        toolbar.SetBackgroundColour(SURFACE)
+        toolbar_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
         if self.manual_callback:
-            self.snap_button = wx.Button(self.panel, label="Take Screenshot")
+            self.snap_button = wx.Button(toolbar, label="Take Screenshot")
             self.snap_button.Bind(wx.EVT_BUTTON, lambda evt: self.manual_callback())
-            button_sizer.Add(self.snap_button, 1, wx.ALL | wx.EXPAND, 2)
-        
+            toolbar_sizer.Add(self.snap_button, 1, wx.RIGHT, GAP)
+
         if self.auto_scroll_callback:
-            self.auto_scroll_button = wx.ToggleButton(self.panel, label="Auto Scroll")
-            self.auto_scroll_button.Bind(wx.EVT_TOGGLEBUTTON, lambda evt: self.auto_scroll_callback(evt.IsChecked()))
-            button_sizer.Add(self.auto_scroll_button, 1, wx.ALL | wx.EXPAND, 2)
+            self.auto_scroll_button = wx.ToggleButton(toolbar, label=AUTO_SCROLL_LABELS[False])
+            self.auto_scroll_button.Bind(wx.EVT_TOGGLEBUTTON, self._on_auto_scroll_toggled)
+            toolbar_sizer.Add(self.auto_scroll_button, 1, wx.RIGHT, GAP)
+
+        toolbar_sizer.AddSpacer(GAP * 2)
 
         if self.undo_callback:
-            self.undo_button = wx.Button(self.panel, label="Undo Last")
+            self.undo_button = wx.Button(toolbar, label="Undo")
             self.undo_button.Bind(wx.EVT_BUTTON, lambda evt: self.undo_callback())
-            button_sizer.Add(self.undo_button, 1, wx.ALL | wx.EXPAND, 2)
+            toolbar_sizer.Add(self.undo_button, 0, wx.RIGHT, GAP)
 
         if self.cancel_callback:
-            self.cancel_button = wx.Button(self.panel, label="Cancel")
+            self.cancel_button = wx.Button(toolbar, label="Cancel")
             self.cancel_button.Bind(wx.EVT_BUTTON, lambda evt: self.cancel_callback())
-            button_sizer.Add(self.cancel_button, 1, wx.ALL | wx.EXPAND, 2)
-        
-        if button_sizer.GetChildren():
-            self.sizer.Add(button_sizer, 0, wx.ALL | wx.EXPAND, 5)
+            toolbar_sizer.Add(self.cancel_button, 0)
 
-        # Settings Panel (always visible)
-        settings_panel = wx.Panel(self.panel)
-        settings_panel.SetBackgroundColour(wx.Colour(50, 50, 50))
-        settings_sizer = wx.BoxSizer(wx.VERTICAL)
+        toolbar.SetSizer(toolbar_sizer)
+        self.sizer.Add(toolbar, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, PAD)
 
-        # Scroll Trigger Checkbox
-        self.scroll_trigger_checkbox = wx.CheckBox(settings_panel, label="Auto-capture on scroll")
-        self.scroll_trigger_checkbox.SetForegroundColour(wx.WHITE)
+        # Options sit flat under the toolbar and wrap on narrow windows instead of stacking
+        options = wx.Panel(self.panel)
+        options.SetBackgroundColour(SURFACE)
+        options_sizer = wx.WrapSizer(wx.HORIZONTAL)
+
+        self.scroll_trigger_checkbox = wx.CheckBox(options, label="Auto-capture on scroll")
+        self.scroll_trigger_checkbox.SetForegroundColour(TEXT_MUTED)
         self.scroll_trigger_checkbox.SetValue(True)  # Default enabled
-        settings_sizer.Add(self.scroll_trigger_checkbox, 0, wx.ALL, 2)
+        options_sizer.Add(self.scroll_trigger_checkbox, 0, wx.RIGHT | wx.TOP, GAP * 3)
 
         if self.veil_callback:
-            self.veil_checkbox = wx.CheckBox(settings_panel, label="Dim outside the capture area")
-            self.veil_checkbox.SetForegroundColour(wx.WHITE)
+            self.veil_checkbox = wx.CheckBox(options, label="Dim outside the capture area")
+            self.veil_checkbox.SetForegroundColour(TEXT_MUTED)
             self.veil_checkbox.SetValue(True)
             self.veil_checkbox.Bind(wx.EVT_CHECKBOX, self._on_veil_toggled)
-            settings_sizer.Add(self.veil_checkbox, 0, wx.ALL, 2)
+            options_sizer.Add(self.veil_checkbox, 0, wx.TOP, GAP * 3)
 
-        settings_panel.SetSizer(settings_sizer)
-        self.sizer.Add(settings_panel, 0, wx.ALL | wx.EXPAND, 5)
+        options.SetSizer(options_sizer)
+        self.sizer.Add(options, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, PAD)
 
         # Debug Info Panel (only if debug mode)
         if self.debug_mode:
             self.debug_panel = wx.Panel(self.panel)
-            self.debug_panel.SetBackgroundColour(wx.Colour(40, 40, 40))
+            self.debug_panel.SetBackgroundColour(SURFACE_RAISED)
             debug_sizer = wx.BoxSizer(wx.VERTICAL)
 
             self.debug_title = wx.StaticText(self.debug_panel, label="Debug Statistics:")
-            self.debug_title.SetForegroundColour(wx.YELLOW)
+            self.debug_title.SetForegroundColour(TEXT)
+            self.debug_title.SetFont(self.debug_title.GetFont().Bold())
             debug_sizer.Add(self.debug_title, 0, wx.ALL, 2)
 
             self.debug_height = wx.StaticText(self.debug_panel, label="Total Height: 0px")
-            self.debug_height.SetForegroundColour(wx.WHITE)
+            self.debug_height.SetForegroundColour(TEXT_MUTED)
             debug_sizer.Add(self.debug_height, 0, wx.ALL, 2)
 
             self.debug_added = wx.StaticText(self.debug_panel, label="Height Added: 0px")
-            self.debug_added.SetForegroundColour(wx.WHITE)
+            self.debug_added.SetForegroundColour(TEXT_MUTED)
             debug_sizer.Add(self.debug_added, 0, wx.ALL, 2)
 
             self.debug_processing = wx.StaticText(self.debug_panel, label="Processing Time: 0.0s")
-            self.debug_processing.SetForegroundColour(wx.WHITE)
+            self.debug_processing.SetForegroundColour(TEXT_MUTED)
             debug_sizer.Add(self.debug_processing, 0, wx.ALL, 2)
 
             self.debug_debounce = wx.StaticText(self.debug_panel, label="Debounce Time: 0.0s")
-            self.debug_debounce.SetForegroundColour(wx.WHITE)
+            self.debug_debounce.SetForegroundColour(TEXT_MUTED)
             debug_sizer.Add(self.debug_debounce, 0, wx.ALL, 2)
 
             self.debug_static_top = wx.StaticText(self.debug_panel, label="Static Top: 0px")
-            self.debug_static_top.SetForegroundColour(wx.WHITE)
+            self.debug_static_top.SetForegroundColour(TEXT_MUTED)
             debug_sizer.Add(self.debug_static_top, 0, wx.ALL, 2)
 
             self.debug_static_bottom = wx.StaticText(self.debug_panel, label="Static Bottom: 0px")
-            self.debug_static_bottom.SetForegroundColour(wx.WHITE)
+            self.debug_static_bottom.SetForegroundColour(TEXT_MUTED)
             debug_sizer.Add(self.debug_static_bottom, 0, wx.ALL, 2)
 
             # Tolerance Slider (debug only)
             tolerance_label = wx.StaticText(self.debug_panel, label="Tolerance:")
-            tolerance_label.SetForegroundColour(wx.WHITE)
+            tolerance_label.SetForegroundColour(TEXT_MUTED)
             debug_sizer.Add(tolerance_label, 0, wx.ALL, 2)
             
             self.tolerance_slider = wx.Slider(self.debug_panel, value=20, minValue=5, maxValue=50, 
                                             style=wx.SL_HORIZONTAL | wx.SL_LABELS)
             debug_sizer.Add(self.tolerance_slider, 0, wx.ALL | wx.EXPAND, 2)
 
-            self.debug_panel.SetSizer(debug_sizer)
-            self.sizer.Add(self.debug_panel, 0, wx.EXPAND | wx.ALL, 5)
+            debug_frame = wx.BoxSizer(wx.VERTICAL)
+            debug_frame.Add(debug_sizer, 1, wx.ALL | wx.EXPAND, PAD - 2)
+            self.debug_panel.SetSizer(debug_frame)
+            self.sizer.Add(self.debug_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, PAD)
         else:
             # Create tolerance slider for non-debug mode with default value
             self.tolerance_slider = wx.Slider(self.panel, value=20, minValue=5, maxValue=50)
@@ -215,16 +231,24 @@ class LivePreviewFrame(wx.Frame):
         self.image_ctrl.Bind(wx.EVT_MOUSEWHEEL, self._on_preview_mousewheel)
         self.image_ctrl.Bind(wx.EVT_MOTION, self._on_preview_hover)
         self.image_ctrl.Bind(wx.EVT_LEAVE_WINDOW, self._on_preview_leave)
-        self.sizer.Add(self.image_ctrl, 1, wx.EXPAND | wx.ALL, 5)
+        self.sizer.Add(self.image_ctrl, 1, wx.EXPAND | wx.ALL, PAD)
 
+        # Status reads top-down: what is happening, the numbers, then what to do next
         self.status_panel = wx.Panel(self.panel)
-        self.status_panel.SetBackgroundColour(wx.Colour(28, 28, 28))
+        self.status_panel.SetBackgroundColour(SURFACE_RAISED)
         status_sizer = wx.BoxSizer(wx.VERTICAL)
-        self.status_text = wx.StaticText(self.status_panel, label="Capture: starting\nMerge: idle")
-        self.status_text.SetForegroundColour(wx.WHITE)
-        status_sizer.Add(self.status_text, 0, wx.ALL | wx.EXPAND, 6)
+        self.status_title = wx.StaticText(self.status_panel, label="Starting")
+        self.status_title.SetForegroundColour(TEXT)
+        self.status_title.SetFont(self.status_title.GetFont().Bold())
+        self.status_metrics = wx.StaticText(self.status_panel, label="")
+        self.status_metrics.SetForegroundColour(TEXT_MUTED)
+        self.status_hint = wx.StaticText(self.status_panel, label="")
+        self.status_hint.SetForegroundColour(TEXT)
+        status_sizer.Add(self.status_title, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, PAD)
+        status_sizer.Add(self.status_metrics, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, PAD // 2)
+        status_sizer.Add(self.status_hint, 0, wx.ALL | wx.EXPAND, PAD)
         self.status_panel.SetSizer(status_sizer)
-        self.sizer.Add(self.status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        self.sizer.Add(self.status_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, PAD)
 
         self.panel.SetSizer(self.sizer)
 
@@ -253,6 +277,12 @@ class LivePreviewFrame(wx.Frame):
 
     def set_auto_scroll(self, enabled):
         self.auto_scroll_button.SetValue(enabled)
+        self.auto_scroll_button.SetLabel(AUTO_SCROLL_LABELS[enabled])
+
+    def _on_auto_scroll_toggled(self, event):
+        # The label names what pressing it does next, so a running auto scroll reads as stoppable
+        self.auto_scroll_button.SetLabel(AUTO_SCROLL_LABELS[event.IsChecked()])
+        self.auto_scroll_callback(event.IsChecked())
 
     def _on_veil_toggled(self, event):
         self.veil_callback(event.IsChecked())
@@ -260,7 +290,11 @@ class LivePreviewFrame(wx.Frame):
         self.Raise()
 
     def update_status(self, status_info):
-        self.status_text.SetLabel(self._format_status(status_info))
+        title, metrics, hint = self._format_status(status_info)
+        self.status_title.SetLabel(title)
+        self.status_metrics.SetLabel(metrics)
+        self.status_hint.SetLabel(hint)
+        self.status_hint.Wrap(max(1, self.status_panel.GetClientSize().width - PAD * 2))
         self.status_panel.Layout()
         self.panel.Layout()
 
@@ -278,23 +312,19 @@ class LivePreviewFrame(wx.Frame):
         recommendation = status_info.get('recommendation', '')
         hover_hint = status_info.get('hover_hint')
 
-        next_capture_text = "next scroll"
-        if next_capture is not None:
-            next_capture_text = f"{max(0.0, next_capture):.2f}s"
-
-        merge_progress_text = merge_state
+        merge_text = f"merge {merge_state}"
         if merge_progress is not None:
-            merge_progress_text = f"{merge_state} {int(max(0.0, min(1.0, merge_progress)) * 100)}%"
+            merge_text = f"{merge_text} {int(max(0.0, min(1.0, merge_progress)) * 100)}%"
         if merge_phase:
-            merge_progress_text = f"{merge_progress_text}, {merge_phase}"
+            merge_text = f"{merge_text}, {merge_phase}"
+
+        metrics = [f"{dims.replace('x', ' × ')} px", f"{merges} merged", f"queue {queue_size}/{queue_capacity}"]
+        if next_capture is not None:
+            metrics.append(f"next capture in {max(0.0, next_capture):.1f}s")
 
         summary = hover_hint or recommendation or last_result or "Scroll until the color slice nears the bottom"
 
-        return "\n".join([
-            f"{capture_state} | {merge_progress_text}",
-            f"{dims} stitched | queue {queue_size}/{queue_capacity} | next {next_capture_text}",
-            summary,
-        ])
+        return f"{capture_state[:1].upper()}{capture_state[1:]}  ·  {merge_text}", "  ·  ".join(metrics), summary
 
     def _region_to_rect(self, region=None):
         region = region or self.selection_region
@@ -560,7 +590,7 @@ class LivePreviewFrame(wx.Frame):
             self.debug_static_top.SetLabel(f"Static Top: {debug_info.get('static_top', self.last_static_top)}px")
             self.debug_static_bottom.SetLabel(f"Static Bottom: {debug_info.get('static_bottom', self.last_static_bottom)}px")
 
-        self.panel.SetBackgroundColour(wx.BLACK)
+        self.panel.SetBackgroundColour(SURFACE)
         self._draw_preview()
         wx.CallLater(200, self.panel.Refresh)
 
