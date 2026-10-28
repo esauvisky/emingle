@@ -5,8 +5,6 @@ from PIL import Image
 from scipy.ndimage import sobel
 from skimage.feature import match_template
 from loguru import logger
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from utils import Config
 
 class ImageMerger:
@@ -307,6 +305,10 @@ class ImageMerger:
 
     @staticmethod
     def _save_debug_plot(debug_id, gray_base, gray_new, feat_base, feat_new, result, shift, overlap_height, score, search_start_y, probe_y=0, probe_h=0):
+        # Imported here so normal runs don't pay for matplotlib at startup
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+
         try:
             plt.switch_backend('Agg')
             fig = plt.figure(figsize=(16, 12))

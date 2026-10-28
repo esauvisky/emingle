@@ -14,22 +14,28 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt pyinstaller
+      # --onedir: a onefile exe unpacks the whole bundle to %TEMP% on every launch, which made the hotkey slow
       - name: build emingle.exe
         run: >
-          pyinstaller --onefile --windowed --name emingle
+          pyinstaller --onedir --windowed --name emingle
           --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
           emingle.py
       - name: build emingle-debug.exe
         run: >
-          pyinstaller --onefile --console --name emingle-debug
+          pyinstaller --onedir --console --name emingle-debug
           --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
           emingle.py
+      - name: zip builds
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/emingle -DestinationPath dist/emingle-windows.zip
+          Compress-Archive -Path dist/emingle-debug -DestinationPath dist/emingle-debug-windows.zip
       - uses: actions/upload-artifact@v4
         with:
           name: emingle-windows
           path: |
-            dist/emingle.exe
-            dist/emingle-debug.exe
+            dist/emingle-windows.zip
+            dist/emingle-debug-windows.zip
 
   linux:
     # Oldest supported runner, so the binary runs on any distro with glibc >= 2.35
@@ -68,6 +74,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            emingle.exe
-            emingle-debug.exe
+            emingle-windows.zip
+            emingle-debug-windows.zip
             emingle-linux
