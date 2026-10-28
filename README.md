@@ -6,12 +6,23 @@ Automatically stitches screenshots as you scroll. Because manually taking 47 scr
 
 https://github.com/user-attachments/assets/b8f0b0d3-06f3-4bb7-9b8d-35dc314afa10
 
-## Install & Run
+## Download
+
+Grab a binary from [Releases](../../releases/latest):
+
+- Windows: `emingle.exe`, double-click it. `emingle-debug.exe` opens a console with logs.
+- Linux (X11, glibc 2.35+): `emingle-linux`, then `chmod +x emingle-linux && ./emingle-linux`
+
+## Run from source
 
 ```bash
 pip install -r requirements.txt
 python emingle.py
 ```
+
+## Releasing
+
+Push a `v*` tag (`git tag v1.0.0 && git push origin v1.0.0`). GitHub Actions builds both binaries and attaches them to a release.
 
 ## Usage
 
@@ -27,8 +38,7 @@ Green = good, red = scroll up a bit.
 - Python 3.7+
 - Working scroll wheel
 - Linux: `sudo apt-get install copyq`
-- Windows: `pip install pywin32`
 
 ## Debug Mode
 
-`python emingle.py --debug` for when things inevitably break.
+`python emingle.py --debug` (or `emingle-debug.exe --debug` / `./emingle-linux --debug`) for when things inevitably break.
