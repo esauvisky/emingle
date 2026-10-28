@@ -562,7 +562,7 @@ def main():
 
     app = wx.App(False)
     # Before the preview: both stay on top, and the one shown last ends up above
-    selector.highlight_region(selection)
+    veil = selector.highlight_region(selection)
     preview = LivePreviewFrame(
         selection["height"],
         debug_mode=Config["DEBUG_MODE"],
@@ -571,6 +571,7 @@ def main():
         undo_callback=on_undo_last,
         cancel_callback=on_cancel,
         hover_callback=on_preview_hover,
+        veil_callback=veil.Show,
     )
     globals()["preview_window"] = preview
 

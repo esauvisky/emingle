@@ -76,7 +76,7 @@ def compute_semantic_regions(
 
 
 class LivePreviewFrame(wx.Frame):
-    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None, hover_callback=None):
+    def __init__(self, screen_height, debug_mode=False, selection_region=None, manual_callback=None, undo_callback=None, cancel_callback=None, hover_callback=None, veil_callback=None):
         # Geometry defaults are refined after controls exist and displays are inspected.
         self.initial_width = 400 if not debug_mode else 500
         self.initial_height = 800  # Increased to fit new controls
@@ -100,6 +100,7 @@ class LivePreviewFrame(wx.Frame):
         self.undo_callback = undo_callback
         self.cancel_callback = cancel_callback
         self.hover_callback = hover_callback
+        self.veil_callback = veil_callback
         self._capture_hidden = False
         self._capture_restore_position = None
         self._last_hover_regions = None
@@ -142,6 +143,13 @@ class LivePreviewFrame(wx.Frame):
         self.scroll_trigger_checkbox.SetForegroundColour(wx.WHITE)
         self.scroll_trigger_checkbox.SetValue(True)  # Default enabled
         settings_sizer.Add(self.scroll_trigger_checkbox, 0, wx.ALL, 2)
+
+        if self.veil_callback:
+            self.veil_checkbox = wx.CheckBox(settings_panel, label="Dim outside the capture area")
+            self.veil_checkbox.SetForegroundColour(wx.WHITE)
+            self.veil_checkbox.SetValue(True)
+            self.veil_checkbox.Bind(wx.EVT_CHECKBOX, self._on_veil_toggled)
+            settings_sizer.Add(self.veil_checkbox, 0, wx.ALL, 2)
 
         settings_panel.SetSizer(settings_sizer)
         self.sizer.Add(settings_panel, 0, wx.ALL | wx.EXPAND, 5)
@@ -236,6 +244,11 @@ class LivePreviewFrame(wx.Frame):
     def get_scroll_trigger_enabled(self):
         """Get current scroll trigger setting"""
         return self.scroll_trigger_checkbox.GetValue()
+
+    def _on_veil_toggled(self, event):
+        self.veil_callback(event.IsChecked())
+        # The veil is always on top too; showing it again would bury this window
+        self.Raise()
 
     def update_status(self, status_info):
         self.status_text.SetLabel(self._format_status(status_info))
