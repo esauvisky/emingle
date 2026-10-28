@@ -1,0 +1,73 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - name: build emingle.exe
+        run: >
+          pyinstaller --onefile --windowed --name emingle
+          --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
+          emingle.py
+      - name: build emingle-debug.exe
+        run: >
+          pyinstaller --onefile --console --name emingle-debug
+          --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
+          emingle.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emingle-windows
+          path: |
+            dist/emingle.exe
+            dist/emingle-debug.exe
+
+  linux:
+    # Oldest supported runner, so the binary runs on any distro with glibc >= 2.35
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libsdl2-2.0-0 libnotify4 libxtst6
+      # PyPI only ships wxPython as an sdist for Linux; use the prebuilt wheel instead of compiling it
+      - run: >
+          pip install --only-binary wxPython
+          -f https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-22.04
+          -r requirements.txt pyinstaller
+      - name: build emingle
+        run: >
+          pyinstaller --onefile --name emingle-linux
+          --hidden-import pynput.keyboard._xorg --hidden-import pynput.mouse._xorg
+          emingle.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emingle-linux
+          path: dist/emingle-linux
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            emingle.exe
+            emingle-debug.exe
+            emingle-linux
