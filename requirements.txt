@@ -5,6 +5,6 @@ scipy
 scikit-image
 pillow
 mss
-pynput==1.7.7
+pynput==1.8.1
 wxPython
 pywin32; sys_platform == "win32"
