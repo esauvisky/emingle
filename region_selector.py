@@ -1,9 +1,15 @@
+import ctypes
+import sys
 import time
+import tkinter as tk
 import wx
 
 class RegionSelector:
     @staticmethod
     def select_region():
+        if sys.platform == "win32":
+            return RegionSelector._select_region_windows()
+
         selection = {}
 
         class SelectionFrame(wx.Frame):
@@ -16,9 +22,8 @@ class RegionSelector:
                     total_rect.Union(rect)
                 # self.ShowFullScreen(False)
 
-                super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER)
+                super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT )
                 self.SetPosition(total_rect.GetPosition())
-                self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
                 self.SetCursor(wx.Cursor(wx.CURSOR_CROSS))
                 self.SetTransparent(30)  # Adjust transparency level
 
@@ -26,6 +31,7 @@ class RegionSelector:
                 self.Bind(wx.EVT_MOTION, self.OnMouseMove)
                 self.Bind(wx.EVT_LEFT_UP, self.OnLeftUp)
                 self.Bind(wx.EVT_PAINT, self.OnPaint)
+                self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
                 self.Bind(wx.EVT_CHAR_HOOK, self.OnCharHook)
 
                 self.start_pos = None
@@ -51,14 +57,15 @@ class RegionSelector:
                 self.Close()
 
             def OnPaint(self, event):
-                dc = wx.AutoBufferedPaintDC(self)
-                dc.SetBackground(wx.BLACK_BRUSH)
-                dc.Clear()
                 if self.start_pos and self.end_pos:
+                    dc = wx.PaintDC(self)
                     dc.SetPen(wx.Pen(wx.RED, 5))
                     dc.SetBrush(wx.RED_BRUSH)
                     rect = wx.Rect(self.start_pos, self.end_pos)
                     dc.DrawRectangle(rect)
+
+            def OnEraseBackground(self, event):
+                pass  # Prevent flickering
 
             def OnCharHook(self, event):
                 if event.GetKeyCode() == wx.WXK_ESCAPE:
@@ -82,6 +89,53 @@ class RegionSelector:
         frame = SelectionFrame()
         frame.Show()
         app.MainLoop()
+
+        time.sleep(0.5)
+        return selection
+
+    @staticmethod
+    def _select_region_windows():
+        # The wx overlay never shows up on Windows; Tk's alpha/topmost toplevel is the well-trodden way there
+        user32 = ctypes.windll.user32
+        # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN: the box spanning every monitor
+        left, top, width, height = (user32.GetSystemMetrics(i) for i in (76, 77, 78, 79))
+        selection = {}
+        drag = {}
+
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.geometry(f"{width}x{height}+{left}+{top}")
+        root.attributes("-topmost", True)
+        root.attributes("-alpha", 0.4)
+
+        canvas = tk.Canvas(root, bg="black", highlightthickness=0, cursor="cross")
+        canvas.pack(fill="both", expand=True)
+        hint = canvas.create_text(width // 2, height // 2, fill="white", font=("Segoe UI", 28, "bold"),
+                                  text="Drag a box around the area to capture  (Esc to cancel)")
+
+        def on_press(event):
+            canvas.delete(hint)
+            drag["start"] = (event.x, event.y)
+            drag["rect"] = canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="red", width=4)
+
+        def on_drag(event):
+            canvas.coords(drag["rect"], *drag["start"], event.x, event.y)
+
+        def on_release(event):
+            start_x, start_y = drag["start"]
+            # Canvas coordinates are relative to the virtual screen origin; mss wants absolute ones
+            selection["left"] = left + min(start_x, event.x)
+            selection["top"] = top + min(start_y, event.y)
+            selection["width"] = abs(event.x - start_x)
+            selection["height"] = abs(event.y - start_y)
+            root.destroy()
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        root.bind("<Escape>", lambda event: root.destroy())
+        root.focus_force()
+        root.mainloop()
 
         time.sleep(0.5)
         return selection
