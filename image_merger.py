@@ -126,11 +126,12 @@ class ImageMerger:
                 probe_y_start, probe_height
             )
 
+        match_score = float(match_score)
         if match_score < 0.4:
-            return None, 0, None, 0
+            return None, 0, None, 0, match_score
 
         ImageMerger._report_progress(progress_callback, 0.72, "overlap located")
-        return shift, overlap_height, match_y_global, probe_height
+        return shift, overlap_height, match_y_global, probe_height, match_score
 
     @staticmethod
     def validate_overlap_robust(base_arr, new_arr, shift, overlap_height, crop_top=0, crop_bottom=0, tolerance=20.0, progress_callback=None):
@@ -225,7 +226,7 @@ class ImageMerger:
             logger.debug(f"Detected static bars: Top {t_crop}px, Bottom {b_crop}px")
 
         # 2. Compute Offset (ignoring static bars)
-        shift, overlap_height, match_y_global, match_band_height = ImageMerger.compute_overlap_offset(
+        shift, overlap_height, match_y_global, match_band_height, match_score = ImageMerger.compute_overlap_offset(
             base_arr, new_arr,
             crop_top=t_crop,
             crop_bottom=b_crop,
@@ -239,6 +240,7 @@ class ImageMerger:
                 'static_top': t_crop,
                 'static_bottom': b_crop,
                 'overlap_height': 0,
+                'match_score': match_score,
                 'shift': None,
                 'match_status': 'none',
                 'matched_region_start': None,
@@ -263,6 +265,7 @@ class ImageMerger:
                 'static_top': t_crop,
                 'static_bottom': b_crop,
                 'overlap_height': overlap_height,
+                'match_score': match_score,
                 'shift': shift,
                 'match_status': 'candidate',
                 'matched_region_start': shift,
@@ -291,6 +294,7 @@ class ImageMerger:
             'static_top': t_crop,
             'static_bottom': b_crop,
             'overlap_height': overlap_height,
+            'match_score': match_score,
             'shift': shift,
             'match_status': 'merged',
             'matched_region_start': shift,

@@ -12,7 +12,7 @@ def _img(height, width=4):
 
 
 @patch.object(ImageMerger, "validate_overlap_robust", return_value=False)
-@patch.object(ImageMerger, "compute_overlap_offset", return_value=(60, 140, 110, 24))
+@patch.object(ImageMerger, "compute_overlap_offset", return_value=(60, 140, 110, 24, 0.9))
 @patch.object(ImageMerger, "_calculate_static_bounds", return_value=(8, 6))
 def test_failed_match_exposes_candidate_footprint_and_probe_band(
     _static_mock, _offset_mock, _validate_mock
@@ -25,10 +25,11 @@ def test_failed_match_exposes_candidate_footprint_and_probe_band(
     assert meta["matched_region_end"] == 260
     assert meta["overlap_visual_start"] == 110
     assert meta["overlap_visual_end"] == 134
+    assert meta["match_score"] == 0.9
 
 
 @patch.object(ImageMerger, "validate_overlap_robust", return_value=True)
-@patch.object(ImageMerger, "compute_overlap_offset", return_value=(60, 140, 110, 24))
+@patch.object(ImageMerger, "compute_overlap_offset", return_value=(60, 140, 110, 24, 0.9))
 @patch.object(ImageMerger, "_calculate_static_bounds", return_value=(8, 6))
 def test_successful_merge_exposes_full_newest_screenshot_footprint_and_probe_band(
     _static_mock, _offset_mock, _validate_mock
@@ -41,3 +42,4 @@ def test_successful_merge_exposes_full_newest_screenshot_footprint_and_probe_ban
     assert meta["matched_region_end"] == 260
     assert meta["overlap_visual_start"] == 110
     assert meta["overlap_visual_end"] == 134
+    assert meta["match_score"] == 0.9

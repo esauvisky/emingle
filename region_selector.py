@@ -4,6 +4,11 @@ import time
 import tkinter as tk
 import wx
 
+from live_preview import ACCENT
+
+SELECT_HINT = "Drag a box around the area to capture  (Esc to cancel)"
+
+
 class RegionSelector:
     @staticmethod
     def select_region():
@@ -22,16 +27,17 @@ class RegionSelector:
                     total_rect.Union(rect)
                 # self.ShowFullScreen(False)
 
-                super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT )
+                super().__init__(None, title="Select Region",  size=total_rect.GetSize(), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.FRAME_NO_TASKBAR)
                 self.SetPosition(total_rect.GetPosition())
                 self.SetCursor(wx.Cursor(wx.CURSOR_CROSS))
-                self.SetTransparent(30)  # Adjust transparency level
+                self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+                # Same dimming as the Windows overlay, dark enough for the hint to read
+                self.SetTransparent(102)
 
                 self.Bind(wx.EVT_LEFT_DOWN, self.OnLeftDown)
                 self.Bind(wx.EVT_MOTION, self.OnMouseMove)
                 self.Bind(wx.EVT_LEFT_UP, self.OnLeftUp)
                 self.Bind(wx.EVT_PAINT, self.OnPaint)
-                self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
                 self.Bind(wx.EVT_CHAR_HOOK, self.OnCharHook)
 
                 self.start_pos = None
@@ -57,15 +63,20 @@ class RegionSelector:
                 self.Close()
 
             def OnPaint(self, event):
-                if self.start_pos and self.end_pos:
-                    dc = wx.PaintDC(self)
-                    dc.SetPen(wx.Pen(wx.RED, 5))
-                    dc.SetBrush(wx.RED_BRUSH)
-                    rect = wx.Rect(self.start_pos, self.end_pos)
-                    dc.DrawRectangle(rect)
-
-            def OnEraseBackground(self, event):
-                pass  # Prevent flickering
+                # Repaint the whole frame each time so a shrinking drag leaves no trails
+                dc = wx.AutoBufferedPaintDC(self)
+                dc.SetBackground(wx.BLACK_BRUSH)
+                dc.Clear()
+                if self.start_pos is None:
+                    dc.SetFont(wx.Font(wx.FontInfo(28).Bold()))
+                    dc.SetTextForeground(wx.WHITE)
+                    text_w, text_h = dc.GetTextExtent(SELECT_HINT)
+                    width, height = self.GetClientSize()
+                    dc.DrawText(SELECT_HINT, (width - text_w) // 2, (height - text_h) // 2)
+                    return
+                dc.SetPen(wx.Pen(wx.Colour(*ACCENT), 2))
+                dc.SetBrush(wx.TRANSPARENT_BRUSH)
+                dc.DrawRectangle(wx.Rect(self.start_pos, self.end_pos))
 
             def OnCharHook(self, event):
                 if event.GetKeyCode() == wx.WXK_ESCAPE:
@@ -110,13 +121,12 @@ class RegionSelector:
 
         canvas = tk.Canvas(root, bg="black", highlightthickness=0, cursor="cross")
         canvas.pack(fill="both", expand=True)
-        hint = canvas.create_text(width // 2, height // 2, fill="white", font=("Segoe UI", 28, "bold"),
-                                  text="Drag a box around the area to capture  (Esc to cancel)")
+        hint = canvas.create_text(width // 2, height // 2, fill="white", font=("Segoe UI", 28, "bold"), text=SELECT_HINT)
 
         def on_press(event):
             canvas.delete(hint)
             drag["start"] = (event.x, event.y)
-            drag["rect"] = canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="red", width=4)
+            drag["rect"] = canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#%02x%02x%02x" % ACCENT, width=2)
 
         def on_drag(event):
             canvas.coords(drag["rect"], *drag["start"], event.x, event.y)
@@ -165,9 +175,9 @@ class RegionSelector:
                 dc.SetBackground(wx.BLACK_BRUSH)
                 dc.Clear()
                 # Border on the veil right outside the hole, so it never ends up in a capture
-                dc.SetPen(wx.Pen(wx.RED, 4))
+                dc.SetPen(wx.Pen(wx.Colour(*ACCENT), 2))
                 dc.SetBrush(wx.TRANSPARENT_BRUSH)
-                dc.DrawRectangle(wx.Rect(self.hole).Inflate(2, 2))
+                dc.DrawRectangle(wx.Rect(self.hole).Inflate(1, 1))
 
         frame = HighlightFrame()
         frame.ShowWithoutActivating()

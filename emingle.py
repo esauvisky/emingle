@@ -36,11 +36,15 @@ AUTO_SCROLL_START_CLICKS = 2
 AUTO_SCROLL_MAX_CLICKS = 15
 AUTO_SCROLL_TARGET_RATIO = 0.4
 
+IDLE_HINT = "Scroll until the color panel nears the carriage, then pause."
+
 # Global State
 full_merged_image = None
 capture_running = True
 manual_trigger_event = threading.Event()
+# (image, overlay) pairs, so an undo restores the region markers that belonged to that image
 undo_stack = []
+current_overlay = {}
 successful_merge_count = 0
 merge_attempts = 0
 last_merge_height_added = 0  # 0 when the last attempt failed
@@ -56,8 +60,9 @@ status_state = {
     "merge_phase": "",
     "next_capture_in": None,
     "last_result": "",
+    "last_result_failed": False,
+    "failure_hint": "",
     "recommendation": "",
-    "hover_hint": None,
 }
 
 
@@ -104,9 +109,11 @@ def publish_status(preview_window=None, **updates):
             merged_dimensions = f"{full_merged_image.width}x{full_merged_image.height}"
         snapshot["total_dimensions"] = merged_dimensions
         snapshot["successful_merges"] = successful_merge_count
+        snapshot["can_undo"] = bool(undo_stack) and not merge_active.is_set() and candidate_queue.empty()
 
     snapshot["queue_size"] = candidate_queue.qsize()
     snapshot["queue_capacity"] = candidate_queue.maxsize
+    snapshot["accepting_input"] = not keyboard_listener.exit_event
 
     if preview_window is not None:
         wx.CallAfter(preview_window.update_status, snapshot)
@@ -144,32 +151,36 @@ def on_manual_trigger():
 
 
 def on_undo_last():
-    global full_merged_image, undo_stack
+    global full_merged_image, undo_stack, current_overlay
 
     if merge_active.is_set() or not candidate_queue.empty():
         logger.info("Undo is unavailable while queued captures are still processing.")
-        publish_status(
-            last_result="Undo unavailable while queued captures are still merging",
-            recommendation="Wait for the queue to drain before undoing",
-        )
+        publish_status(last_result="Undo is unavailable while captures are merging", last_result_failed=False)
         return
 
     with state_lock:
         if not undo_stack:
             return
-        full_merged_image = undo_stack.pop()
+        full_merged_image, current_overlay = undo_stack.pop()
         restored_image = full_merged_image.copy()
+        restored_overlay = current_overlay
 
     logger.info(f"Undid last merge. Stack size: {len(undo_stack)}")
     if "preview_window" in globals():
-        wx.CallAfter(preview_window.update_image, restored_image, "Undid last merge", True)
-    publish_status(last_result="Undid the last successful merge", recommendation="Scroll again when the latest slice is near the bottom")
+        wx.CallAfter(preview_window.update_image, restored_image, True, restored_overlay)
+        wx.CallAfter(preview_window.trace_undo)
+    publish_status(last_result="Undid the last successful merge", last_result_failed=False)
 
 
 def on_cancel():
     if "keyboard_listener" in globals():
         keyboard_listener.request_exit("cancelled")
     publish_status(capture_state="cancelled", recommendation="Closing without copying the stitched image")
+
+
+def on_done():
+    keyboard_listener.request_exit("done")
+    publish_status(capture_state="finishing", recommendation="Copying the stitched image once queued captures merge")
 
 
 def on_auto_scroll(enabled):
@@ -184,7 +195,12 @@ def on_auto_scroll(enabled):
 def stop_auto_scroll(preview_window, reason):
     auto_scroll_active.clear()
     wx.CallAfter(preview_window.set_auto_scroll, False)
-    publish_status(preview_window, last_result=reason, recommendation="Scroll manually or start Auto Scroll again")
+    publish_status(
+        preview_window,
+        last_result=reason,
+        last_result_failed=True,
+        failure_hint="Scroll manually or start Auto Scroll again",
+    )
 
 
 def auto_scroll_loop(region, preview_window, keyboard_listener):
@@ -237,17 +253,13 @@ def auto_scroll_loop(region, preview_window, keyboard_listener):
             logger.info(f"Auto scroll: {pixels_per_click:.0f}px per click, next step {clicks} clicks")
 
 
-def on_preview_hover(label):
-    publish_status(hover_hint=f"hover: {label}" if label else None)
-
-
 def captures_match(a, b):
     diff = np.abs(np.asarray(a, dtype=np.int16) - np.asarray(b, dtype=np.int16)).max(axis=2)
     return np.count_nonzero(diff > BOTTOM_PIXEL_THRESHOLD) / diff.size < BOTTOM_MAX_CHANGED_RATIO
 
 
 def merge_worker_loop(preview_window, keyboard_listener):
-    global full_merged_image, successful_merge_count, undo_stack, merge_attempts, last_merge_height_added
+    global full_merged_image, successful_merge_count, undo_stack, merge_attempts, last_merge_height_added, current_overlay
 
     last_merged_capture = None
 
@@ -265,7 +277,6 @@ def merge_worker_loop(preview_window, keyboard_listener):
             merge_state="merging",
             merge_progress=0.0,
             merge_phase="starting",
-            recommendation="You can keep scrolling while this merge finishes",
         )
 
         with state_lock:
@@ -297,7 +308,6 @@ def merge_worker_loop(preview_window, keyboard_listener):
                 merge_state="merging",
                 merge_progress=progress,
                 merge_phase=phase,
-                recommendation="Wait for the merge to finish or keep scrolling if more content remains",
             )
 
         merged_result, merge_metadata = ImageMerger.merge_images_vertically(
@@ -310,10 +320,6 @@ def merge_worker_loop(preview_window, keyboard_listener):
 
         if merged_result.height > base_image.height:
             with state_lock:
-                undo_stack.append(base_image.copy())
-                if len(undo_stack) > 10:
-                    undo_stack.pop(0)
-
                 old_height = full_merged_image.height if full_merged_image is not None else base_image.height
                 full_merged_image = merged_result
                 successful_merge_count += 1
@@ -359,14 +365,21 @@ def merge_worker_loop(preview_window, keyboard_listener):
                     "overlap_visual_end": merge_metadata["overlap_visual_end"],
                 }
 
-            wx.CallAfter(preview_window.update_image, merged_image, "Merged! Keep scrolling.", True, debug_info)
+            with state_lock:
+                undo_stack.append((base_image, current_overlay))
+                if len(undo_stack) > 10:
+                    undo_stack.pop(0)
+                current_overlay = debug_info
+
+            wx.CallAfter(preview_window.update_image, merged_image, True, debug_info)
+            wx.CallAfter(preview_window.trace_merge, merge_metadata["overlap_visual_start"], merge_metadata["match_score"])
             publish_status(
                 preview_window,
                 merge_state="idle",
                 merge_progress=1.0,
                 merge_phase="done",
-                last_result=f"Merged +{height_added}px from a queued capture",
-                recommendation="Scroll until the color slice is almost out of view before capturing again",
+                last_result=f"Merged +{height_added}px",
+                last_result_failed=False,
             )
         else:
             logger.warning("Merge failed (No overlap).")
@@ -376,8 +389,8 @@ def merge_worker_loop(preview_window, keyboard_listener):
                 last_merge_height_added = 0
 
             failure_debug = None
-            failure_last_result = "Merge failed; the new screenshot did not overlap enough"
-            failure_recommendation = "Scroll back slightly and let the next capture include more overlap"
+            failure_last_result = "No overlap found"
+            failure_recommendation = "Scroll back slightly so the next capture overlaps the color panel"
 
             if merge_metadata.get("matched_region_start") is not None:
                 failure_debug = {
@@ -397,17 +410,21 @@ def merge_worker_loop(preview_window, keyboard_listener):
                         "debounce_time": max(0.0, candidate["captured_at"] - candidate["scroll_timestamp"]),
                     })
 
-                failure_last_result = "Capture matched earlier content but did not extend the stitch"
-                failure_recommendation = "Scroll farther so the colored slice moves closer to the bottom before capturing again"
+                failure_last_result = "Nothing new to add"
+                failure_recommendation = "Scroll farther, until the color panel nears the carriage"
 
-            wx.CallAfter(preview_window.update_image, current_image, "MISMATCH! Scroll UP slightly.", False, failure_debug)
+            wx.CallAfter(preview_window.update_image, current_image, False, failure_debug)
+            # A miss with no match at all is logged where the stitch currently ends
+            failure_y = merge_metadata["overlap_visual_start"] if merge_metadata["matched_region_start"] is not None else current_image.height
+            wx.CallAfter(preview_window.trace_failure, failure_y, merge_metadata["match_score"])
             publish_status(
                 preview_window,
                 merge_state="idle",
                 merge_progress=1.0,
                 merge_phase="failed",
                 last_result=failure_last_result,
-                recommendation=failure_recommendation,
+                last_result_failed=True,
+                failure_hint=failure_recommendation,
             )
 
         candidate_queue.task_done()
@@ -417,7 +434,7 @@ def merge_worker_loop(preview_window, keyboard_listener):
 
 
 def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
-    global full_merged_image, capture_running, undo_stack, successful_merge_count
+    global full_merged_image, capture_running, undo_stack, successful_merge_count, current_overlay
 
     logger.info("Step 1: Capturing initial base image...")
     publish_status(
@@ -445,9 +462,10 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
     with state_lock:
         full_merged_image = base_img
         undo_stack.clear()
+        current_overlay = {}
         successful_merge_count = 0
 
-    wx.CallAfter(preview_window.update_image, base_img, "Started. Scroll & Stop to capture.", True)
+    wx.CallAfter(preview_window.update_image, base_img, True)
     publish_status(
         preview_window,
         capture_state="waiting for scroll",
@@ -455,7 +473,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
         merge_progress=None,
         merge_phase="",
         last_result="Base screenshot captured",
-        recommendation="Scroll until the latest visible content is close to the bottom, then pause briefly",
+        recommendation=IDLE_HINT,
     )
 
     last_seen_scroll = mouse_listener.last_scroll_time
@@ -530,8 +548,13 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
                     recommendation="Keep scrolling if more content remains; the merge worker is draining the queue",
                 )
 
+        # This loop is the only writer of capture_state and recommendation while capturing; results and
+        # their failure advice live in their own fields so they survive these refreshes
         if now - last_status_publish >= 0.1:
-            if queue_full:
+            if auto_scroll_active.is_set():
+                capture_state = "auto scrolling"
+                recommendation = "Hands off the mouse; Auto Scroll stops at the bottom"
+            elif queue_full:
                 capture_state = "queue full"
                 recommendation = "Pause scrolling until the merge queue drains"
             elif manual_triggered:
@@ -539,11 +562,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
                 recommendation = "Hold steady for the manual capture"
             elif pending_scroll_time is None:
                 capture_state = "waiting for scroll" if scroll_trigger_enabled else "auto capture disabled"
-                recommendation = (
-                    "Scroll down until the color slice is almost out of view"
-                    if scroll_trigger_enabled else
-                    "Use Take Screenshot or re-enable auto capture"
-                )
+                recommendation = IDLE_HINT if scroll_trigger_enabled else "Use Take Screenshot or re-enable auto capture"
             elif scroll_settled:
                 capture_state = "ready to capture"
                 recommendation = "Hold steady; the next screenshot can be taken now"
@@ -582,7 +601,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
         logger.info("Copying to clipboard...")
         with state_lock:
             final_image = full_merged_image.copy()
-        wx.CallAfter(preview_window.update_image, final_image, "Copied to Clipboard!", True)
+        wx.CallAfter(preview_window.update_image, final_image, True)
         publish_status(
             preview_window,
             capture_state="completed",
@@ -590,6 +609,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
             merge_progress=None,
             merge_phase="",
             last_result="Copied the stitched image to the clipboard",
+            last_result_failed=False,
             recommendation="Done",
         )
         ClipboardManager.copy_image_to_clipboard(final_image)
@@ -605,6 +625,7 @@ def processing_loop(region, preview_window, mouse_listener, keyboard_listener):
             merge_progress=None,
             merge_phase="",
             last_result="Exited without copying stitched output",
+            last_result_failed=False,
             recommendation="Done",
         )
 
@@ -650,7 +671,7 @@ def main():
         manual_callback=on_manual_trigger,
         undo_callback=on_undo_last,
         cancel_callback=on_cancel,
-        hover_callback=on_preview_hover,
+        done_callback=on_done,
         veil_callback=veil.Show,
         auto_scroll_callback=on_auto_scroll,
     )
