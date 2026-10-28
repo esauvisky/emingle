@@ -8,10 +8,10 @@ https://github.com/user-attachments/assets/b8f0b0d3-06f3-4bb7-9b8d-35dc314afa10
 
 ## Download
 
-Grab a binary from [Releases](../../releases/latest):
+[![Latest release](https://img.shields.io/github/v/release/esauvisky/emingle)](https://github.com/esauvisky/emingle/releases/latest)
 
-- Windows: `emingle.exe`. The first time you open it, it asks for a keyboard shortcut (default `Ctrl+Alt+E`) and adds itself to the Start Menu; after that, press the shortcut to capture. `emingle-debug.exe` opens a console with logs.
-- Linux (X11, glibc 2.35+): `emingle-linux`, then `chmod +x emingle-linux && ./emingle-linux`
+- **Windows:** [emingle.exe](https://github.com/esauvisky/emingle/releases/latest/download/emingle.exe). The first time you open it, it asks for a keyboard shortcut (default `Ctrl+Alt+E`) and adds itself to the Start Menu; after that, press the shortcut to capture. [emingle-debug.exe](https://github.com/esauvisky/emingle/releases/latest/download/emingle-debug.exe) opens a console with logs.
+- **Linux** (X11, glibc 2.35+): [emingle-linux](https://github.com/esauvisky/emingle/releases/latest/download/emingle-linux), then `chmod +x emingle-linux && ./emingle-linux`
 
 ## Run from source
 
