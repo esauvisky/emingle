@@ -28,7 +28,7 @@ Push a `v*` tag (`git tag v1.0.0 && git push origin v1.0.0`). GitHub Actions bui
 
 1. Select area to capture
 2. Scroll normally, wait 0.5s between scrolls
-3. Press Escape when done
+3. When you reach the end, scroll once more (or press Escape)
 4. Image is copied to clipboard
 
 Green = good, red = scroll up a bit.

@@ -7,6 +7,7 @@ import threading
 import time
 
 import mss
+import numpy as np
 import wx
 from PIL import Image
 from loguru import logger
@@ -25,6 +26,9 @@ setup_logging("DEBUG", {"function": True, "thread": True})
 
 MAX_CAPTURE_QUEUE = 3
 DEBOUNCE_TIME = 0.5
+# A capture that matches the last merged one means the page no longer moves: the user hit the bottom and scrolled again
+BOTTOM_PIXEL_THRESHOLD = 16
+BOTTOM_MAX_CHANGED_RATIO = 0.001
 
 # Global State
 full_merged_image = None
@@ -163,8 +167,15 @@ def on_preview_hover(label):
     publish_status(hover_hint=f"hover: {label}" if label else None)
 
 
+def captures_match(a, b):
+    diff = np.abs(np.asarray(a, dtype=np.int16) - np.asarray(b, dtype=np.int16)).max(axis=2)
+    return np.count_nonzero(diff > BOTTOM_PIXEL_THRESHOLD) / diff.size < BOTTOM_MAX_CHANGED_RATIO
+
+
 def merge_worker_loop(preview_window, keyboard_listener):
     global full_merged_image, successful_merge_count, undo_stack
+
+    last_merged_capture = None
 
     while True:
         try:
@@ -187,6 +198,13 @@ def merge_worker_loop(preview_window, keyboard_listener):
             base_image = full_merged_image.copy() if full_merged_image is not None else None
 
         if base_image is None:
+            candidate_queue.task_done()
+            merge_active.clear()
+            continue
+
+        if last_merged_capture is not None and captures_match(last_merged_capture, candidate["image"]):
+            logger.info("Capture matches the last merged one; reached the bottom. Finishing...")
+            keyboard_listener.request_exit("bottom")
             candidate_queue.task_done()
             merge_active.clear()
             continue
@@ -227,6 +245,7 @@ def merge_worker_loop(preview_window, keyboard_listener):
                 successful_merge_count += 1
                 merged_image = full_merged_image.copy()
                 height_added = merged_image.height - old_height
+            last_merged_capture = candidate["image"]
 
             logger.success(
                 f"Merged! Total height: {merged_image.height}px "
