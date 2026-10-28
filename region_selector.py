@@ -142,47 +142,45 @@ class RegionSelector:
 
 
     @staticmethod
-    def highlight_region(left, top, width, height):
-        app = wx.App(False, useBestVisual=True)
+    def highlight_region(region):
+        """Veils everything outside `region` while capturing. Needs a running wx.App."""
 
         class HighlightFrame(wx.Frame):
-            def __init__(self, left, top, width, height):
-                display_count = wx.Display.GetCount()
-                total_rect = wx.Rect()
-                for d in range(display_count):
-                    display = wx.Display(d)
-                    rect = display.GetClientArea()
-                    total_rect.Union(rect)
+            def __init__(self):
+                self.screen = wx.Rect()
+                for d in range(wx.Display.GetCount()):
+                    self.screen.Union(wx.Display(d).GetGeometry())
 
-                super().__init__(None, title="Highlight Region", size=(0,0), pos=(0,0), style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.TRANSPARENT_WINDOW | wx.BG_STYLE_TRANSPARENT | wx.FRAME_SHAPED)
-                self.SetSize(total_rect.GetSize())
-                self.SetPosition(total_rect.GetPosition())
-                self.SetTransparent(20)  # Adjusting transparency for highlighting
+                # TRANSPARENT_WINDOW makes it click-through on Windows; FRAME_SHAPED allows the hole over the region
+                super().__init__(None, title="Highlight Region", pos=self.screen.GetPosition(), size=self.screen.GetSize(),
+                                 style=wx.STAY_ON_TOP | wx.NO_BORDER | wx.FRAME_NO_TASKBAR | wx.FRAME_SHAPED | wx.TRANSPARENT_WINDOW)
+                self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+                self.SetTransparent(120)
+                # The region is in absolute screen coordinates; the frame's are relative to its own origin
+                self.hole = wx.Rect(region["left"] - self.screen.x, region["top"] - self.screen.y, region["width"], region["height"])
                 self.Bind(wx.EVT_PAINT, self.OnPaint)
 
-                self.highlight_rect = wx.Rect(left, top, width, height)
-                self.total_rect = total_rect
-
             def OnPaint(self, event):
-                # region = wx.Region(bmp, wx.TransparentColour)
-                outer_region = wx.Region(self.total_rect)
-                highlight_region = wx.Region(self.highlight_rect)
-                outer_region.Subtract(highlight_region)
-                dc = wx.PaintDC(self)
-                dc.SetBrush(wx.RED_BRUSH)  # Transparent brush
-                dc.DrawRectangle(outer_region.GetBox())
-                self.SetShape(outer_region)
-                self.ShowFullScreen(True)
+                dc = wx.AutoBufferedPaintDC(self)
+                dc.SetBackground(wx.BLACK_BRUSH)
+                dc.Clear()
+                # Border on the veil right outside the hole, so it never ends up in a capture
+                dc.SetPen(wx.Pen(wx.RED, 4))
+                dc.SetBrush(wx.TRANSPARENT_BRUSH)
+                dc.DrawRectangle(wx.Rect(self.hole).Inflate(2, 2))
 
-        frame = HighlightFrame(left, top, width, height)
-        frame.Show()
-        return app
-
+        frame = HighlightFrame()
+        frame.ShowWithoutActivating()
+        shape = wx.Region(wx.Rect(wx.Point(0, 0), frame.screen.GetSize()))
+        shape.Subtract(frame.hole)
+        if not frame.SetShape(shape):
+            raise RuntimeError("SetShape failed on the highlight overlay")
+        return frame
 
 
 if __name__ == '__main__':
-    selector = RegionSelector()
-    region = selector.select_region()
+    region = RegionSelector.select_region()
     print(f"Selected region: {region}")
-    app = selector.highlight_region(region['left'], region['top'], region['width'], region['height'])
+    app = wx.App(False)
+    RegionSelector.highlight_region(region)
     app.MainLoop()

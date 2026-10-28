@@ -561,6 +561,8 @@ def main():
     mouse_listener.start()
 
     app = wx.App(False)
+    # Before the preview: both stay on top, and the one shown last ends up above
+    selector.highlight_region(selection)
     preview = LivePreviewFrame(
         selection["height"],
         debug_mode=Config["DEBUG_MODE"],
