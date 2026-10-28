@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/b8f0b0d3-06f3-4bb7-9b8d-35dc314afa10
 
 Grab a binary from [Releases](../../releases/latest):
 
-- Windows: `emingle.exe`, double-click it. `emingle-debug.exe` opens a console with logs.
+- Windows: `emingle.exe`. The first time you open it, it asks for a keyboard shortcut (default `Ctrl+Alt+E`) and adds itself to the Start Menu; after that, press the shortcut to capture. `emingle-debug.exe` opens a console with logs.
 - Linux (X11, glibc 2.35+): `emingle-linux`, then `chmod +x emingle-linux && ./emingle-linux`
 
 ## Run from source

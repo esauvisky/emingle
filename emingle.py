@@ -18,6 +18,9 @@ from live_preview import LivePreviewFrame
 from region_selector import RegionSelector
 from utils import Config, setup_logging
 
+if sys.platform == "win32":
+    from hotkey_shortcut import setup_hotkey_shortcut
+
 setup_logging("DEBUG", {"function": True, "thread": True})
 
 MAX_CAPTURE_QUEUE = 3
@@ -521,6 +524,9 @@ def main():
         # mss makes the process per-monitor DPI aware on its first grab. Do it before any wx window
         # exists so the selection coordinates and the captures are both in physical pixels.
         ctypes.oledll.shcore.SetProcessDpiAwareness(2)
+        # Only the packaged exe gets a hotkey; from source there is no single file for a shortcut to launch
+        if getattr(sys, "frozen", False) and not setup_hotkey_shortcut():
+            return
 
     logger.info("Select region...")
     selector = RegionSelector()
